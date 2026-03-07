@@ -14,4 +14,7 @@ wheels/
 .agents/
 
 # Generated artifacts
-data/processed_questions.json
+data/*
+!data/summary.txt
+!data/transcript.json
+artifacts/quality/

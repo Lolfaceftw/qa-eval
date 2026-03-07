@@ -58,6 +58,7 @@ The app is oriented around information-loss evaluation. The prompts ask for yes/
   - `vllm.*` for endpoint, model, max context, and connection tuning.
   - `embedding.*` for deduplication model, threshold, and device.
 - The code also supports `app.provider` for provider selection, but the current `cfg/config.yaml` relies on the default provider fallback of `vllm`.
+- The repo tracks `data/transcript.json` and `data/summary.txt` as inputs, while other `data/` artifacts are local outputs and should stay ignored.
 
 ### 4. Validation and preprocessing
 

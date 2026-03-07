@@ -95,6 +95,7 @@ Notes:
 - The run screen now validates `vllm.base_url` once with `models.list()` before starting generation and reuses that warmed connection for the agent requests.
 - `vllm.connection.preflight_timeout_seconds` limits the initial endpoint check, while `connect_timeout_seconds` and `read_timeout_seconds` control generation requests.
 - `vllm.connection.max_retries` is intentionally low by default so unhealthy endpoints fail fast instead of silently stalling.
+- Generated outputs under `data/` are treated as local artifacts; the checked-in transcript and summary inputs remain the only repo-tracked files in that directory.
 - `embedding.device: null` enables automatic device selection (`cuda` when available, otherwise `cpu`).
 - Config edits made in the TUI are written back to disk immediately.
 

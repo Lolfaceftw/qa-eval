@@ -13,6 +13,13 @@ vllm:
   base_url: http://localhost:8000/v1
   model: Qwen/Qwen3.5-35B-A3B
   max_context: 262144
+  connection:
+    preflight_timeout_seconds: 5.0
+    connect_timeout_seconds: 5.0
+    read_timeout_seconds: 120.0
+    pool_timeout_seconds: 5.0
+    keepalive_expiry_seconds: 30.0
+    max_retries: 1
 
 embedding:
   model: Qwen/Qwen3-Embedding-4B
