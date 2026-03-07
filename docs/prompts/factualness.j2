@@ -1,0 +1,24 @@
+Create a minimum of 200 questions for Factualness.
+
+The questions will be answered by an evaluator if the provided transcript and summary follows our criteria:
+- The dialogue of the speaker from the summary should correspond to the transcript.
+- The ground truth is the transcript. The questions must compare both the summary and the transcript.
+- Strictly focus on information loss, question about what information is missing from the summary compared to the transcript.
+- the question should be answerable by yes or no.
+- STRICTLY NO SIMILAR QUESTIONS
+Avoid:
+- separate questions that compare like: (1) Does X say Y in transcript? (2) Does X say Y in summary?
+- common and repeating prefix on questions like "Does X..." and "Does X..." repeatedly
+
+attachments: 
+Transcript:
+{{ transcript }}
+
+Summary:
+{{ summary }}
+
+the model output should be a raw JSON array:
+[
+  {"question_number": 1, "question": str},
+  ...
+]

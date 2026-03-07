@@ -1,0 +1,20 @@
+api_keys:
+  vllm: EMPTY
+data:
+  summary_path: data/summary.txt
+  transcript_path: data/transcript.json
+prompts:
+  factualness: docs/prompts/factualness.j2
+  naturalness: docs/prompts/naturalness.j2
+
+ui:
+  css_path: src/ui/css/style.tcss
+vllm:
+  base_url: http://localhost:8000/v1
+  model: Qwen/Qwen3.5-35B-A3B
+  max_context: 262144
+
+embedding:
+  model: Qwen/Qwen3-Embedding-4B
+  threshold: 0.85
+  device: null # auto-detect (cuda/cpu)

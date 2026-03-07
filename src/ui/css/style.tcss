@@ -1,0 +1,39 @@
+#menu-container {
+    align: center middle;
+    height: 100%;
+}
+
+Button {
+    width: 100%;
+    margin: 1;
+}
+
+#config-keys-pane {
+    width: 30%;
+    border-right: solid green;
+}
+
+#config-values-pane {
+    width: 70%;
+    padding: 1;
+}
+
+#results-view MarkdownH1 {
+    color: green;
+    text-style: bold;
+}
+
+#results-view MarkdownH2 {
+    color: magenta;
+    text-style: bold;
+}
+
+#results-view MarkdownH3 {
+    color: skyblue;
+    text-style: bold;
+}
+
+#results-view MarkdownBlockQuote {
+    color: red;
+    border-left: solid red;
+}
