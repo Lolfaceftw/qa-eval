@@ -1,24 +1,31 @@
-Create a minimum of 200 questions for Factualness.
+Create at least {{ minimum_questions }} questions for factualness.
 
-The questions will be answered by an evaluator if the provided transcript and summary follows our criteria:
-- The dialogue of the speaker from the summary should correspond to the transcript.
-- The ground truth is the transcript. The questions must compare both the summary and the transcript.
-- Strictly focus on information loss, question about what information is missing from the summary compared to the transcript.
-- the question should be answerable by yes or no.
-- STRICTLY NO SIMILAR QUESTIONS
-Avoid:
-- separate questions that compare like: (1) Does X say Y in transcript? (2) Does X say Y in summary?
-- common and repeating prefix on questions like "Does X..." and "Does X..." repeatedly
+The transcript is the ground truth. The evaluator will compare the transcript and the summary.
 
-attachments: 
+Category contract:
+- Ask only about omitted or altered content from the summary.
+- Stay within these dimensions only: attribution, numerical_detail, chronology, causality, qualification, action_outcome, entity_relation.
+- Each question must target a distinct coverage item from the transcript.
+- Every question must be answerable by yes or no.
+- Vary openings across the full set. Do not let most questions begin with the same two words.
+- Do not create paired questions like (1) "Does X say Y in the transcript?" and (2) "Does X say Y in the summary?"
+- Do not restate the same topic with helper-verb swaps such as mention, include, reference, cover, or discuss.
+- Do not ask about tone, flow, transitions, pacing, or personality. Those belong to naturalness.
+
+Output rules:
+- Return a raw JSON array only.
+- Each object must include question_number, dimension, and question.
+- The dimension value must be one of the allowed factualness dimensions exactly as written above.
+
+attachments:
 Transcript:
 {{ transcript }}
 
 Summary:
 {{ summary }}
 
-the model output should be a raw JSON array:
+The model output should be a raw JSON array:
 [
-  {"question_number": 1, "question": str},
+  {"question_number": 1, "dimension": "attribution", "question": "Would a reviewer know which speaker made the claim about market intelligence after reading the summary?"},
   ...
 ]

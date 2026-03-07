@@ -1,14 +1,22 @@
-Create a minimum of 200 questions for Naturalness.
+Create at least {{ minimum_questions }} questions for naturalness.
 
-The questions will be answered by an evaluator if the provided transcript and summary follows our criteria:
-- The flow of the summary should sound natural, not robotic, no excessive transition words, and should capture the personality of the speaker
-- The ground truth is the transcript. The questions must compare both the summary and the transcript.
-- Strictly focus on information loss, question about what information is missing from the summary compared to the transcript.
-- the question should be answerable by yes or no.
-- STRICTLY NO SIMILAR QUESTIONS
-Avoid:
-- separate questions that compare like: (1) Does X say Y in transcript? (2) Does X say Y in summary?
-- - common and repeating prefix on questions like "Does X..." and "Does X..." repeatedly
+The transcript is the ground truth. The evaluator will compare the transcript and the summary.
+
+Category contract:
+- Ask only about whether the summary preserves how the speaker sounds and flows.
+- Stay within these dimensions only: tone, flow, transition, personality, hedging, emphasis, pacing, dialogue_dynamics.
+- Each question must target a distinct naturalness behavior.
+- Every question must be answerable by yes or no.
+- Vary openings across the full set. Do not let most questions begin with the same two words.
+- Do not ask pure entity-recall or topic-recall questions. If a question can be answered only by checking whether a name, guest, product, brand, or episode number appears, do not include it.
+- Do not restate the same topic with helper-verb swaps such as mention, include, reference, cover, or discuss.
+- Keep the question anchored to naturalness signals such as tone, flow, transitions, pacing, voice, hedging, emphasis, or speaker personality.
+
+Output rules:
+- Return a raw JSON array only.
+- Each object must include question_number, dimension, and question.
+- The dimension value must be one of the allowed naturalness dimensions exactly as written above.
+
 attachments:
 Transcript:
 {{ transcript }}
@@ -16,8 +24,8 @@ Transcript:
 Summary:
 {{ summary }}
 
-the model output should be a raw JSON array:
+The model output should be a raw JSON array:
 [
-  {"question_number": 1, "question": str},
+  {"question_number": 1, "dimension": "tone", "question": "Would a listener still hear the speaker's cautious tone when the summary describes market forecasts?"},
   ...
 ]
