@@ -276,9 +276,8 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
         agent_type: str,
         provider_arg: object,
         transcript_text: str,
-        summary_text: str,
     ) -> str:
-        del self, provider_arg, transcript_text, summary_text
+        del self, provider_arg, transcript_text
         return json.dumps(
             [
                 {

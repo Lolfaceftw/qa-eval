@@ -304,14 +304,10 @@ class RunScreen(Screen):
         agent_type: str,
         provider: LLMProvider,
         transcript_text: str,
-        summary_text: str,
     ) -> str:
         """Stream one agent response into the UI and return the raw text."""
         agent = AgentFactory.create_agent(agent_type, provider)
-        response_stream = agent.generate_questions_stream(
-            transcript_text,
-            summary_text,
-        )
+        response_stream = agent.generate_questions_stream(transcript_text)
         return await self._stream_response(
             title=f"{agent_type.capitalize()} Agent",
             response_stream=response_stream,
@@ -438,7 +434,6 @@ class RunScreen(Screen):
                     agent_type,
                     provider,
                     transcript_text,
-                    summary_text,
                 )
 
                 try:

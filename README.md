@@ -8,15 +8,15 @@ The current pipeline:
 
 1. Loads a transcript JSON file and a summary text file from configuration.
 2. Validates both inputs with Pydantic models.
-3. Renders prompt templates for `factualness` and `naturalness`.
-4. Streams question generation from a vLLM-compatible endpoint.
+3. Renders transcript-only prompt templates for `factualness` and `naturalness`.
+4. Streams question generation from a vLLM-compatible endpoint using transcript context only.
 5. Parses and validates each model response as a raw JSON array of question objects.
 6. Filters off-rubric questions, canonicalizes boilerplate-heavy wording, and deduplicates similar questions globally with embeddings.
 7. Writes the filtered question set to [`data/processed_questions.json`](data/processed_questions.json) and a filtering report to [`data/question_filter_report.json`](data/question_filter_report.json).
 8. Renders an evaluator prompt for each final category question set and streams strict yes/no answers from the same provider.
 9. Writes per-question answers to [`data/question_evaluations.json`](data/question_evaluations.json) and normalized category scores to [`data/evaluation_report.json`](data/evaluation_report.json).
 
-The project is aimed at information-loss evaluation. The transcript is treated as ground truth, and the generated questions focus on what the summary omitted or failed to preserve.
+The project is aimed at information-loss evaluation. The transcript is treated as ground truth, and the generated questions are built from the transcript alone so the final evaluation remains independent of the candidate summary.
 
 ## Requirements
 
@@ -139,6 +139,7 @@ Prompt templates live in [`docs/prompts/`](docs/prompts/). The current templates
 
 - request a minimum of 200 questions for each category
 - require yes/no questions
+- keep question generation summary-independent by giving the generator transcript context only
 - require generated questions to be positively keyed so `yes` means the summary preserved the targeted signal
 - require a category `dimension` for each generated question
 - focus on information loss relative to the transcript

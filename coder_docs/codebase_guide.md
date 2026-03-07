@@ -10,15 +10,15 @@ This file is the project-local map of the current codebase. Update it whenever t
 
 1. Loads a transcript JSON file and a summary text file from config.
 2. Validates them with Pydantic models.
-3. Renders prompt templates for two agent categories: factualness and naturalness.
-4. Streams question-generation output from a vLLM-compatible endpoint.
+3. Renders transcript-only prompt templates for two agent categories: factualness and naturalness.
+4. Streams question-generation output from a vLLM-compatible endpoint using transcript context only.
 5. Parses and validates the model output into question lists with category metadata.
 6. Filters off-rubric questions, canonicalizes boilerplate-heavy phrasing, and deduplicates globally with embeddings.
 7. Writes the filtered question set to `data/processed_questions.json` and the filtering report to `data/question_filter_report.json`.
 8. Renders evaluator prompts for the surviving per-category question sets and streams strict yes/no answers from the same provider.
 9. Writes the per-question answers to `data/question_evaluations.json` and the normalized scoring report to `data/evaluation_report.json`.
 
-The app is oriented around information-loss evaluation. The prompts ask for yes/no questions that compare transcript and summary, with the transcript as ground truth.
+The app is oriented around information-loss evaluation. The transcript is the only input to question generation so the benchmark stays independent of the candidate summary; the evaluator later compares those fixed questions against the summary.
 
 ## Read-First Operational Facts
 
@@ -83,7 +83,7 @@ The app is oriented around information-loss evaluation. The prompts ask for yes/
   - `naturalness`
 - `docs/prompts/evaluator.j2` evaluates the final question sets and expects `question_number` plus a strict `yes` or `no` answer for each item.
 - Prompt rendering now injects a shared minimum-question target through `QUESTION_REQUEST_MINIMUMS`.
-- The question-generation contract requires the LLM to return `question_number`, `dimension`, and `question` for each item.
+- The question-generation contract is transcript-only and requires the LLM to return `question_number`, `dimension`, and `question` for each item.
 - Question-generation prompts are now positively keyed so `yes` means the summary preserved the targeted factual or naturalness signal.
 - `src/providers/llm_provider.py` defines the provider lifecycle and generation interface.
 - `src/providers/vllm_provider.py` is the only implemented provider today. It uses `openai.AsyncOpenAI` against a vLLM-compatible base URL, performs a one-time `models.list()` preflight, reuses a tuned `httpx.AsyncClient`, and counts tokens with `tiktoken`.
@@ -137,9 +137,10 @@ The app is oriented around information-loss evaluation. The prompts ask for yes/
 - Each segment currently contains `speaker`, `start_time`, `end_time`, and `text`.
 - Summary input is plain text with speaker-tagged blocks.
 - Prompt templates currently ask for a minimum of 200 questions per category.
+- Question generation receives transcript context only; the summary is reserved for evaluator prompts.
 - Question-generation output must be a raw JSON array of objects with `question_number`, `dimension`, and `question`.
 - Evaluator output must be a raw JSON array of objects with `question_number` and `answer`, where `answer` is `yes` or `no`.
-- `factualness` questions must stay on omitted or altered content.
+- `factualness` questions must stay on transcript details that a faithful summary should preserve.
 - `naturalness` questions must stay on tone, flow, pacing, voice, transitions, hedging, emphasis, or speaker personality.
 - Generated questions should be phrased so a `yes` answer means the summary preserved the targeted signal.
 - The public output artifact strips internal metadata and keeps only `question_number` and `question`.

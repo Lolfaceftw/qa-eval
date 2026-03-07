@@ -60,13 +60,11 @@ class QuestionGenerationAgent(BaseAgent, ABC):
     async def generate_questions_stream(
         self,
         transcript_text: str,
-        summary_text: str,
     ) -> AsyncGenerator[str, None]:
         """Render and stream the question-generation prompt."""
         prompt = PromptRenderer.render(
             self.agent_type,
             transcript=transcript_text,
-            summary=summary_text,
         )
         async for chunk in self._stream_prompt(prompt):
             yield chunk

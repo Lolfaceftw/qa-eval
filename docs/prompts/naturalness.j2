@@ -1,10 +1,11 @@
 Create at least {{ minimum_questions }} questions for naturalness.
 
-The transcript is the ground truth. The evaluator will compare the transcript and the summary.
+The transcript is the ground truth. The evaluator will later compare the transcript and the summary, but you must build a summary-independent benchmark from the transcript alone.
 
 Category contract:
-- Ask only about whether the summary preserves how the speaker sounds and flows.
-- Phrase each question so that `yes` means the summary preserved the targeted naturalness behavior.
+- Ask only about naturalness behaviors from the transcript that a faithful summary should preserve.
+- Do not inspect, infer, or speculate about a candidate summary.
+- Phrase each question so that `yes` means a summary preserved the targeted naturalness behavior.
 - Stay within these dimensions only: tone, flow, transition, personality, hedging, emphasis, pacing, dialogue_dynamics.
 - Each question must target a distinct naturalness behavior.
 - Every question must be answerable by yes or no.
@@ -21,9 +22,6 @@ Output rules:
 attachments:
 Transcript:
 {{ transcript }}
-
-Summary:
-{{ summary }}
 
 The model output should be a raw JSON array:
 [

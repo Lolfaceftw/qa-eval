@@ -18,12 +18,16 @@ from src.agents.agent_factory import (
 class FakeProvider:
     """Return deterministic token counts and streamed chunks."""
 
+    def __init__(self) -> None:
+        """Store the last prompt passed to the fake provider."""
+        self.last_prompt: str | None = None
+
     async def prepare(self) -> None:
         """Satisfy the provider interface."""
 
     async def generate_stream(self, prompt: str) -> AsyncGenerator[str, None]:
         """Yield a fixed two-chunk response."""
-        del prompt
+        self.last_prompt = prompt
         yield "["
         yield "]"
 
@@ -43,12 +47,12 @@ class FakeProvider:
 @pytest.mark.anyio
 async def test_question_agent_emits_request_status_before_first_chunk() -> None:
     """Emit lifecycle markers so the UI can explain the pre-stream delay."""
-    agent = FactualnessAgent(FakeProvider())
+    provider = FakeProvider()
+    agent = FactualnessAgent(provider)
 
     chunks = []
     async for chunk in agent.generate_questions_stream(
         transcript_text='{"segments": 1}',
-        summary_text="<SPEAKER_00>summary</SPEAKER_00>",
     ):
         chunks.append(chunk)
 
@@ -57,3 +61,6 @@ async def test_question_agent_emits_request_status_before_first_chunk() -> None:
     assert chunks[2].startswith(FIRST_TOKEN_LATENCY_PREFIX)
     assert chunks[3:5] == ["[", "]"]
     assert chunks[-1].startswith(f"\n{TOTAL_STATS_PREFIX}")
+    assert provider.last_prompt is not None
+    assert 'Transcript:\n{"segments": 1}' in provider.last_prompt
+    assert "Summary:" not in provider.last_prompt
