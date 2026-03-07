@@ -1,6 +1,16 @@
+"""Render prompt templates for the question-generation agents."""
+
 from pathlib import Path
+
 from jinja2 import Environment, FileSystemLoader
+
 from src.config.config_manager import ConfigManager
+
+
+QUESTION_REQUEST_MINIMUMS: dict[str, int] = {
+    "factualness": 200,
+    "naturalness": 200,
+}
 
 
 class PromptRenderer:
@@ -23,4 +33,8 @@ class PromptRenderer:
         env = Environment(loader=FileSystemLoader(str(prompt_path.parent)))
         template = env.get_template(prompt_path.name)
 
-        return template.render(transcript=transcript, summary=summary)
+        return template.render(
+            transcript=transcript,
+            summary=summary,
+            minimum_questions=QUESTION_REQUEST_MINIMUMS.get(agent_type, 200),
+        )

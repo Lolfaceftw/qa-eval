@@ -114,6 +114,7 @@
     <rule>Prefer realistic tests that reflect the real pipeline rather than toy tests detached from production behavior.</rule>
     <rule>Keep most test value at the integration level, with unit tests for focused logic and fewer end-to-end tests.</rule>
     <rule>Test behavior and contracts rather than private implementation details.</rule>
+    <rule>When an implementation change affects behavior, interfaces, contracts, or outputs that tests should cover, update or add the relevant tests in the same change.</rule>
     <rule>Keep tests deterministic by controlling time, randomness, environment, and side effects.</rule>
     <rule>Use fixtures as explicit setup with minimal scope and reliable teardown.</rule>
     <rule>Mock only true external boundaries such as networks, cloud services, or operating-system edges.</rule>
@@ -132,6 +133,7 @@
     <rule>For methodology-sensitive implementations, search academic journals first, avoid unsupported magic formulas, and add inline IEEE-style citation comments at the implementation site with a fuller same-file reference whenever practical.</rule>
     <rule>Use coder_docs/ruff.md as the source of truth for linting workflow and coder_docs/uv_package_manager.md as the source of truth for dependency and environment management.</rule>
     <rule>Use uv as the package manager for this repository and use ruff as the linter for this repository.</rule>
+    <rule>When implementation changes affect tested behavior, contracts, or outputs, update the relevant tests in the same change before considering the work complete.</rule>
     <rule>When code changes affect behavior, interfaces, setup, outputs, workflows, or operator expectations, update the relevant Markdown documentation in the same change, including files such as README.md, docs/*.md, and applicable coder_docs/*.md.</rule>
     <rule>Treat Markdown documentation review as part of every implementation, review, and verification pass so documentation updates are considered before concluding the task.</rule>
     <rule>When code, configuration, prompts, runtime flow, tooling, or developer workflow changes materially, update coder_docs/codebase_guide.md in the same change so it stays current.</rule>

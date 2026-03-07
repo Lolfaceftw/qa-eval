@@ -1,39 +1,58 @@
-import os
+"""Compute semantic-similarity signals for generated questions.
 
-# Suppress huggingface_hub progress bars and transformers warnings that break tui
+References:
+    [1] N. Reimers and I. Gurevych, "Sentence-BERT: Sentence Embeddings using
+    Siamese BERT-Networks," in Proceedings of the 2019 Conference on Empirical
+    Methods in Natural Language Processing and the 9th International Joint
+    Conference on Natural Language Processing (EMNLP-IJCNLP), Hong Kong, China,
+    2019, pp. 3982-3992, doi: 10.18653/v1/D19-1410.
+
+Current Literature and Gaps:
+    ACL Anthology literature was reviewed for sentence-level semantic similarity
+    and clustering methods appropriate for duplicate detection. Reference [1]
+    supports sentence embeddings with cosine similarity as the semantic scoring
+    primitive. This repository still needs repo-specific heuristics for
+    canonicalization, category-fit validation, and representative selection
+    because the literature does not define this exact transcript-summary
+    question-selection workflow.
+"""
+
+import os
+from collections.abc import Callable, Sequence
+
+# Suppress huggingface_hub progress bars and transformers warnings that break tui.
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.environ["TRANSFORMERS_VERBOSITY"] = "error"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
-import torch
 import numpy as np
-from typing import List, Dict, Any, Callable
-from transformers import AutoModel, AutoTokenizer
+import torch
 from sklearn.metrics.pairwise import cosine_similarity
+from transformers import AutoModel, AutoTokenizer
+
 from src.config.config_manager import ConfigManager
 
 
 class QuestionProcessor:
-    """Service for processing, deduplicating, and filtering agent-generated questions."""
+    """Load embeddings and compute similarity components for question text."""
 
     def __init__(
         self,
-        model_id: str = None,
-        device: str = None,
-        log_callback: Callable[[str], None] = None,
-    ):
+        model_id: str | None = None,
+        device: str | None = None,
+        log_callback: Callable[[str], None] | None = None,
+    ) -> None:
+        """Initialize the embedding model configuration."""
         config = ConfigManager()
         self.model_id = model_id or config.get(
             "embedding.model", "Qwen/Qwen3-Embedding-4B"
         )
 
         if device is None:
-            # Check config first, then auto-detect
             config_device = config.get("embedding.device")
-            if config_device:
-                self.device = config_device
-            else:
-                self.device = "cuda" if torch.cuda.is_available() else "cpu"
+            self.device = config_device or (
+                "cuda" if torch.cuda.is_available() else "cpu"
+            )
         else:
             self.device = device
 
@@ -41,16 +60,18 @@ class QuestionProcessor:
         self.tokenizer = None
         self.model = None
 
-    def _log(self, message: str):
+    def _log(self, message: str) -> None:
+        """Emit a log line to the optional UI callback."""
         if self.log_callback:
             self.log_callback(f"> {message}\n")
 
-    def _ensure_model_loaded(self):
-        """Loads the model and tokenizer if not already loaded."""
+    def _ensure_model_loaded(self) -> None:
+        """Load the tokenizer and embedding model on first use."""
         if self.model is None:
             self._log(f"Loading embedding model: {self.model_id} on {self.device}")
             self.tokenizer = AutoTokenizer.from_pretrained(
-                self.model_id, trust_remote_code=True
+                self.model_id,
+                trust_remote_code=True,
             )
             self.model = AutoModel.from_pretrained(
                 self.model_id,
@@ -59,83 +80,85 @@ class QuestionProcessor:
             ).to(self.device)
             self.model.eval()
 
-    def get_embeddings(self, texts: List[str]) -> np.ndarray:
-        """Generates embeddings for a list of texts."""
-        self._ensure_model_loaded()
+    def get_embeddings(self, texts: Sequence[str]) -> np.ndarray:
+        """Generate L2-normalized embeddings for the supplied texts."""
+        if not texts:
+            return np.empty((0, 0))
 
-        # Qwen-Embedding models typically use a specific instruction prefix or prompt structure
-        # for different tasks. For general similarity, we can use them as is or with a prefix.
-        # Based on HFM documentation, we'll just tokenize and encode.
+        self._ensure_model_loaded()
 
         with torch.no_grad():
             inputs = self.tokenizer(
-                texts,
+                list(texts),
                 padding=True,
                 truncation=True,
                 return_tensors="pt",
                 max_length=512,
             ).to(self.device)
             outputs = self.model(**inputs)
-            # Use last hidden state mean pooling or [CLS] as requested by model docs
-            # For Qwen3-Embedding, it usually has a specific pooler but let's assume mean pooling for robustness
-            embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
 
-        return embeddings
+            attention_mask = inputs["attention_mask"].unsqueeze(-1)
+            token_embeddings = outputs.last_hidden_state
+            masked_embeddings = token_embeddings * attention_mask
+            summed_embeddings = masked_embeddings.sum(dim=1)
+            token_counts = attention_mask.sum(dim=1).clamp(min=1)
+            # IEEE citation: Adapted sentence-embedding similarity workflow from [1].
+            embeddings = summed_embeddings / token_counts
+            embeddings = torch.nn.functional.normalize(embeddings, p=2, dim=1)
 
-    def deduplicate(
-        self, questions: List[Dict[str, Any]], threshold: float = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Removes highly similar questions using cosine similarity.
-        'questions' should be a list of dicts like {'question': str, ...}
-        """
-        if not questions:
+        return embeddings.cpu().numpy()
+
+    def get_similarity_matrix(self, texts: Sequence[str]) -> np.ndarray:
+        """Compute pairwise cosine similarity for the supplied texts."""
+        embeddings = self.get_embeddings(texts)
+        if embeddings.size == 0:
+            return np.empty((0, 0))
+        # IEEE citation: Cosine similarity is used as the semantic comparison
+        # primitive in the SBERT workflow described in [1].
+        return cosine_similarity(embeddings)
+
+    def find_similar_components(
+        self,
+        texts: Sequence[str],
+        threshold: float | None = None,
+    ) -> list[set[int]]:
+        """Cluster texts into connected components above the similarity threshold."""
+        if not texts:
             return []
 
         if threshold is None:
             threshold = ConfigManager().get("embedding.threshold", 0.85)
 
-        texts = [q["question"] for q in questions]
-        embeddings = self.get_embeddings(texts)
+        similarity_matrix = self.get_similarity_matrix(texts)
+        parent = list(range(len(texts)))
 
-        # Calculate cosine similarity matrix
-        sim_matrix = cosine_similarity(embeddings)
-        # TODO: see what this does and implement percentile
-        to_remove = set()
-        for i in range(len(texts)):
-            if i in to_remove:
-                continue
-            for j in range(i + 1, len(texts)):
-                if j in to_remove:
-                    continue
-                if sim_matrix[i, j] > threshold:
-                    # Mark the 'partner' (later one) for removal
-                    to_remove.add(j)
-                    self._log(
-                        f"Removing similar question: '{texts[j]}' (Similarity: {sim_matrix[i, j]:.4f})"
-                    )
+        def find(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
 
-        filtered_questions = [
-            q for idx, q in enumerate(questions) if idx not in to_remove
-        ]
-        return filtered_questions
+        def union(left: int, right: int) -> None:
+            left_root = find(left)
+            right_root = find(right)
+            if left_root != right_root:
+                parent[right_root] = left_root
 
-    def process_and_limit(
-        self, questions_by_category: Dict[str, List[Dict[str, Any]]]
-    ) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Processes questions for multiple categories: deduplicates until all are unique.
-        """
-        result = {}
-        for category, questions in questions_by_category.items():
-            self._log(
-                f"Processing category '{category}' with {len(questions)} questions"
-            )
-            # 1. Deduplicate
-            final_questions = self.deduplicate(questions)
-            result[category] = final_questions
-            self._log(
-                f"Category '{category}' finished with {len(final_questions)} unique questions (removed {len(questions) - len(final_questions)} duplicates)"
-            )
+        for left in range(len(texts)):
+            for right in range(left + 1, len(texts)):
+                if similarity_matrix[left, right] > threshold:
+                    union(left, right)
 
-        return result
+        components: dict[int, set[int]] = {}
+        for index in range(len(texts)):
+            root = find(index)
+            components.setdefault(root, set()).add(index)
+
+        clustered_components = list(components.values())
+        duplicate_clusters = [cluster for cluster in clustered_components if len(cluster) > 1]
+        self._log(
+            "Found "
+            f"{len(duplicate_clusters)} semantic duplicate clusters "
+            f"from {len(texts)} candidate questions."
+        )
+        return clustered_components

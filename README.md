@@ -1,6 +1,6 @@
 # qa-eval
 
-`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, deduplicates them with embeddings, and writes the final question set to a JSON artifact for downstream evaluation.
+`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, deduplicates them with embeddings, and writes the final question set to JSON artifacts for downstream evaluation.
 
 ## What It Does
 
@@ -10,9 +10,9 @@ The current pipeline:
 2. Validates both inputs with Pydantic models.
 3. Renders prompt templates for `factualness` and `naturalness`.
 4. Streams question generation from a vLLM-compatible endpoint.
-5. Parses each model response as a raw JSON array of question objects.
-6. Deduplicates similar questions with embeddings.
-7. Writes the final result to [`data/processed_questions.json`](data/processed_questions.json).
+5. Parses and validates each model response as a raw JSON array of question objects.
+6. Filters off-rubric questions, canonicalizes boilerplate-heavy wording, and deduplicates similar questions globally with embeddings.
+7. Writes the final result to [`data/processed_questions.json`](data/processed_questions.json) and a filtering report to [`data/question_filter_report.json`](data/question_filter_report.json).
 
 The project is aimed at information-loss evaluation. The transcript is treated as ground truth, and the generated questions focus on what the summary omitted or failed to preserve.
 
@@ -35,7 +35,7 @@ Review and update [`cfg/config.yaml`](cfg/config.yaml) for your environment, esp
 
 - input file paths
 - prompt template paths
-- vLLM base URL and model
+- vLLM base URL, model, and connection settings
 - embedding model, threshold, and device
 
 Run the TUI from the repository root:
@@ -75,6 +75,13 @@ vllm:
   base_url: http://localhost:8000/v1
   model: your-model-id
   max_context: 32768
+  connection:
+    preflight_timeout_seconds: 5.0
+    connect_timeout_seconds: 5.0
+    read_timeout_seconds: 120.0
+    pool_timeout_seconds: 5.0
+    keepalive_expiry_seconds: 30.0
+    max_retries: 1
 
 embedding:
   model: Qwen/Qwen3-Embedding-4B
@@ -85,6 +92,10 @@ embedding:
 Notes:
 
 - `app.provider` currently defaults to `vllm` when omitted.
+- The run screen now validates `vllm.base_url` once with `models.list()` before starting generation and reuses that warmed connection for the agent requests.
+- `vllm.connection.preflight_timeout_seconds` limits the initial endpoint check, while `connect_timeout_seconds` and `read_timeout_seconds` control generation requests.
+- `vllm.connection.max_retries` is intentionally low by default so unhealthy endpoints fail fast instead of silently stalling.
+- Generated outputs under `data/` are treated as local artifacts; the checked-in transcript and summary inputs remain the only repo-tracked files in that directory.
 - `embedding.device: null` enables automatic device selection (`cuda` when available, otherwise `cpu`).
 - Config edits made in the TUI are written back to disk immediately.
 
@@ -124,8 +135,10 @@ Prompt templates live in [`docs/prompts/`](docs/prompts/). The current templates
 
 - request a minimum of 200 questions for each category
 - require yes/no questions
+- require a category `dimension` for each generated question
 - focus on information loss relative to the transcript
 - expect the model to return a raw JSON array
+- keep `factualness` and `naturalness` disjoint so naturalness questions stay about tone, flow, pacing, voice, or personality instead of factual entity recall
 
 The final output artifact is written to [`data/processed_questions.json`](data/processed_questions.json) and has this shape:
 
@@ -145,6 +158,8 @@ The final output artifact is written to [`data/processed_questions.json`](data/p
   ]
 }
 ```
+
+The pipeline also writes [`data/question_filter_report.json`](data/question_filter_report.json) with per-category counts for parsed, invalid, off-rubric, exact-duplicate, semantic-duplicate, cross-category-drop, and final-kept questions.
 
 ## Repository Layout
 
@@ -169,7 +184,9 @@ Key files:
 - [`src/main.py`](src/main.py): Textual app bootstrap
 - [`src/ui/screens.py`](src/ui/screens.py): UI screens and pipeline orchestration
 - [`src/config/config_manager.py`](src/config/config_manager.py): YAML config loading and persistence
-- [`src/services/question_processor.py`](src/services/question_processor.py): embedding-based question deduplication
+- [`src/models/question_models.py`](src/models/question_models.py): validation models for raw generated question payloads
+- [`src/services/question_pipeline.py`](src/services/question_pipeline.py): post-generation parsing, filtering, renumbering, and reporting
+- [`src/services/question_processor.py`](src/services/question_processor.py): embedding-backed similarity processing
 - [`src/providers/vllm_provider.py`](src/providers/vllm_provider.py): vLLM-compatible LLM client
 
 ## Development
@@ -180,13 +197,14 @@ Common commands:
 uv sync --dev
 uv run python src/main.py
 uv run ruff check .
+uv run pytest
 ```
 
 Current development notes:
 
 - The repository uses `uv` as the package manager and `ruff` as the linter.
-- There is no automated test suite in the repository yet.
-- The provider abstraction exists, but the implemented runtime path is currently the vLLM provider.
+- The repository now includes a pytest regression suite for question parsing and deduplication behavior.
+- The provider abstraction exists, but the implemented runtime path is currently the vLLM provider with a one-time preflight and warmed HTTP client per run.
 - If you change code in a way that affects behavior, interfaces, setup, outputs, workflows, or operator expectations, update the relevant Markdown documentation in the same change.
 - If you materially change runtime flow, tooling, prompts, configuration semantics, or file ownership, also update [`coder_docs/codebase_guide.md`](coder_docs/codebase_guide.md).
 
