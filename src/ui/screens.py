@@ -1,6 +1,7 @@
 """Define the Textual screens used by the qa-eval TUI."""
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -28,8 +29,13 @@ from src.agents.agent_factory import (
     TOTAL_STATS_PREFIX,
 )
 from src.config.config_manager import ConfigManager
+from src.config.runtime_settings import (
+    QUESTION_CATEGORIES,
+    get_question_request_minimum,
+    get_question_request_minimums,
+    is_embedding_enabled,
+)
 from src.models.data_models import Summary, Transcript
-from src.prompts.templates import QUESTION_REQUEST_MINIMUMS
 from src.providers.llm_provider import LLMProvider
 from src.providers.vllm_provider import VLLMProvider
 from src.services.data_processor import DataProcessor
@@ -193,9 +199,18 @@ class FileViewScreen(Screen):
 class RunScreen(Screen):
     """Run the question-generation pipeline and stream status updates."""
 
+    MARKDOWN_FLUSH_INTERVAL_SECONDS = 0.05
+
     BINDINGS = [
         Binding("escape", "go_back", "Back"),
     ]
+
+    def __init__(self) -> None:
+        """Initialize the buffered markdown state for streaming output."""
+        super().__init__()
+        self.accumulated_output = ""
+        self._pending_markdown_fragments: list[str] = []
+        self._markdown_flush_event = asyncio.Event()
 
     def compose(self) -> ComposeResult:
         """Build the run-results screen."""
@@ -206,41 +221,61 @@ class RunScreen(Screen):
         yield Footer()
 
     async def on_mount(self) -> None:
-        """Initialize the UI sync loop and start the pipeline."""
-        self.accumulated_output = ""
-        self._last_rendered_text = ""
-        self._ui_sync_task = asyncio.create_task(self._ui_sync_loop())
+        """Start the buffered markdown flush loop and pipeline task."""
+        self._markdown_flush_task = asyncio.create_task(self._markdown_flush_loop())
         asyncio.create_task(self.run_pipeline())
 
     async def on_unmount(self) -> None:
         """Cancel background tasks when the screen unmounts."""
-        if hasattr(self, "_ui_sync_task"):
-            self._ui_sync_task.cancel()
+        if hasattr(self, "_markdown_flush_task"):
+            self._markdown_flush_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._markdown_flush_task
 
-    async def _ui_sync_loop(self) -> None:
-        """Sync the markdown output to the UI at a fixed rate."""
+    async def _markdown_flush_loop(self) -> None:
+        """Append buffered markdown fragments to the UI in small batches."""
         while True:
             try:
-                if self.accumulated_output != self._last_rendered_text:
-                    self.results_view.update(self.accumulated_output)
-                    self._last_rendered_text = self.accumulated_output
-                    self.query_one("#results-container").scroll_end(animate=False)
-                await asyncio.sleep(0.1)
+                await self._markdown_flush_event.wait()
+                await asyncio.sleep(self.MARKDOWN_FLUSH_INTERVAL_SECONDS)
+                await self._flush_pending_markdown()
             except asyncio.CancelledError:
+                await self._flush_pending_markdown()
                 break
             except Exception:
                 await asyncio.sleep(1)
 
+    async def _flush_pending_markdown(self) -> None:
+        """Flush buffered markdown to the results widget incrementally."""
+        if not hasattr(self, "results_view"):
+            return
+
+        while self._pending_markdown_fragments:
+            pending_markdown = "".join(self._pending_markdown_fragments)
+            self._pending_markdown_fragments.clear()
+            self._markdown_flush_event.clear()
+            await self.results_view.append(pending_markdown)
+            self.query_one("#results-container").scroll_end(animate=False)
+
     def append_text(self, text: str) -> None:
         """Append text to the streamed markdown output."""
         self.accumulated_output += text
+        if hasattr(self, "results_view"):
+            self._pending_markdown_fragments.append(text)
+            self._markdown_flush_event.set()
 
     @staticmethod
-    def _failed_parse_report(category: str, error: Exception) -> dict[str, Any]:
+    def _failed_parse_report(
+        category: str,
+        error: Exception,
+        requested: int | None = None,
+    ) -> dict[str, Any]:
         """Create a fallback parse report when a category response cannot be parsed."""
-        requested = QUESTION_REQUEST_MINIMUMS.get(category, 200)
+        resolved_requested = requested
+        if resolved_requested is None:
+            resolved_requested = get_question_request_minimum(category)
         return {
-            "requested": requested,
+            "requested": resolved_requested,
             "raw_items": 0,
             "validated": 0,
             "invalid": 1,
@@ -421,15 +456,21 @@ class RunScreen(Screen):
                 )
             else:
                 self.append_text("- Provider connection prepared successfully.\n")
-            processor = QuestionProcessor(log_callback=self.append_text)
+            requested_per_category = get_question_request_minimums(config)
+            semantic_dedup_enabled = is_embedding_enabled(config)
+            processor = None
+            if semantic_dedup_enabled:
+                processor = QuestionProcessor(log_callback=self.append_text)
             pipeline = QuestionPipeline(
                 question_processor=processor,
                 log_callback=self.append_text,
+                semantic_dedup_enabled=semantic_dedup_enabled,
+                requested_per_category=requested_per_category,
             )
 
             questions_by_category = {}
             parse_reports = {}
-            for agent_type in QUESTION_REQUEST_MINIMUMS:
+            for agent_type in QUESTION_CATEGORIES:
                 response_text = await self._run_agent(
                     agent_type,
                     provider,
@@ -456,12 +497,25 @@ class RunScreen(Screen):
                     parse_reports[agent_type] = self._failed_parse_report(
                         agent_type,
                         exc,
+                        requested_per_category.get(agent_type),
                     )
 
             self.append_text("\n### 4. Deduplicating and Filtering Questions...\n")
-            self.append_text(
-                "> [!NOTE]\n> Loading Qwen3-Embedding-4B model. This might take a moment...\n"
-            )
+            if semantic_dedup_enabled:
+                embedding_model = config.get(
+                    "embedding.model",
+                    "Qwen/Qwen3-Embedding-4B",
+                )
+                self.append_text(
+                    "> [!NOTE]\n"
+                    f"> Loading `{embedding_model}` for semantic deduplication. "
+                    "This might take a moment...\n"
+                )
+            else:
+                self.append_text(
+                    "- Semantic deduplication is disabled by `embedding.enabled`; "
+                    "skipping embedding model loading.\n"
+                )
 
             try:
                 processed_batch = pipeline.process(questions_by_category)

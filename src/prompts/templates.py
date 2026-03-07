@@ -8,12 +8,10 @@ from typing import Any
 from jinja2 import Environment, FileSystemLoader
 
 from src.config.config_manager import ConfigManager
-
-
-QUESTION_REQUEST_MINIMUMS: dict[str, int] = {
-    "factualness": 200,
-    "naturalness": 200,
-}
+from src.config.runtime_settings import (
+    QUESTION_CATEGORIES,
+    get_question_request_minimum,
+)
 
 
 class PromptRenderer:
@@ -37,9 +35,9 @@ class PromptRenderer:
         env = Environment(loader=FileSystemLoader(str(prompt_path.parent)))
         template = env.get_template(prompt_path.name)
         render_context = dict(context)
-        if template_name in QUESTION_REQUEST_MINIMUMS:
+        if template_name in QUESTION_CATEGORIES:
             render_context.setdefault(
                 "minimum_questions",
-                QUESTION_REQUEST_MINIMUMS[template_name],
+                get_question_request_minimum(template_name, config),
             )
         return template.render(**render_context)

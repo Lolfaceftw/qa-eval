@@ -13,7 +13,7 @@ This file is the project-local map of the current codebase. Update it whenever t
 3. Renders transcript-only prompt templates for two agent categories: factualness and naturalness.
 4. Streams question-generation output from a vLLM-compatible endpoint using transcript context only.
 5. Parses and validates the model output into question lists with category metadata.
-6. Filters off-rubric questions, canonicalizes boilerplate-heavy phrasing, and deduplicates globally with embeddings.
+6. Filters off-rubric questions, canonicalizes boilerplate-heavy phrasing, removes exact duplicates, and optionally deduplicates globally with embeddings.
 7. Writes the filtered question set to `data/processed_questions.json` and the filtering report to `data/question_filter_report.json`.
 8. Renders evaluator prompts for the surviving per-category question sets and streams strict yes/no answers from the same provider.
 9. Writes the per-question answers to `data/question_evaluations.json` and the normalized scoring report to `data/evaluation_report.json`.
@@ -47,6 +47,7 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `MainMenuScreen` routes to run, config, or exit.
 - `ConfigScreen` flattens nested config keys and edits values through the singleton config manager.
 - `RunScreen` owns streaming and file IO, then delegates question parsing/filtering to `QuestionPipeline` and answer alignment/scoring to `EvaluationPipeline`.
+- `RunScreen` now buffers streamed markdown fragments and flushes them into Textual's incremental `Markdown.append()` path instead of rerendering the entire results document on a timer.
 - `FileViewScreen` opens linked files from the run output for inspection.
 
 ### 3. Config and data loading
@@ -56,9 +57,10 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `ConfigManager.set()` writes changes back to disk immediately.
 - Current important config areas:
   - `data.*` for transcript and summary paths.
+  - `questions.*` for per-category minimum question targets.
   - `prompts.*` for Jinja template paths.
   - `vllm.*` for endpoint, model, max context, and connection tuning.
-  - `embedding.*` for deduplication model, threshold, and device.
+  - `embedding.*` for enabling semantic deduplication plus its model, threshold, and device.
 - `prompts.evaluator` points at the strict yes/no evaluator template used after question filtering.
 - The code also supports `app.provider` for provider selection, but the current `cfg/config.yaml` relies on the default provider fallback of `vllm`.
 - The repo tracks `data/transcript.json` and `data/summary.txt` as inputs, while other `data/` artifacts are local outputs and should stay ignored.
@@ -82,7 +84,7 @@ The app is oriented around information-loss evaluation. The transcript is the on
   - `factualness`
   - `naturalness`
 - `docs/prompts/evaluator.j2` evaluates the final question sets and expects `question_number` plus a strict `yes` or `no` answer for each item.
-- Prompt rendering now injects a shared minimum-question target through `QUESTION_REQUEST_MINIMUMS`.
+- Prompt rendering now injects config-backed minimum-question targets for each generation category.
 - The question-generation contract is transcript-only and requires the LLM to return `question_number`, `dimension`, and `question` for each item.
 - Question-generation prompts are now positively keyed so `yes` means the summary preserved the targeted factual or naturalness signal.
 - `src/providers/llm_provider.py` defines the provider lifecycle and generation interface.
@@ -94,8 +96,9 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `RunScreen._run_agent()` streams output and expects the model to return a raw JSON array.
 - `RunScreen._run_evaluator()` streams evaluator output and expects a raw JSON array of `question_number` and `answer`.
 - `RunScreen._stream_response()` now surfaces stream lifecycle markers before the JSON body: prompt tokens, request-submitted waiting status, first-token latency, then final prompt-plus-answer context usage.
+- The run-results pane uses a small buffered flush loop with incremental markdown appends so large streamed outputs do not trigger full-document markdown reparses every refresh tick.
 - `RunScreen.run_pipeline()` prepares the provider once before question generation, reuses it for evaluation, reports the validated endpoint/model/latency in the UI, and closes the shared client in a `finally` block.
-- `src/services/question_pipeline.py` extracts the first JSON array it can decode, validates each item with Pydantic, canonicalizes boilerplate-heavy phrasing, filters off-rubric naturalness questions, deduplicates exact matches globally, then performs global semantic deduplication.
+- `src/services/question_pipeline.py` extracts the first JSON array it can decode, validates each item with Pydantic, canonicalizes boilerplate-heavy phrasing, filters off-rubric naturalness questions, deduplicates exact matches globally, then optionally performs global semantic deduplication depending on `embedding.enabled`.
 - Semantic deduplication uses `src/services/question_processor.py`, which loads a Hugging Face embedding model, computes attention-mask-aware pooled sentence embeddings, normalizes them, and clusters near-duplicates with cosine similarity.
 - Representative selection is deterministic: `factualness` wins over `naturalness`, then richer canonical questions win, then earlier order wins.
 - Final processed questions are written to `data/processed_questions.json`.
@@ -116,7 +119,8 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `src/services/question_pipeline.py`: parsing, category-fit filtering, exact deduplication, semantic deduplication, renumbering, and report generation.
 - `src/services/evaluation_pipeline.py`: evaluator-response parsing, answer alignment, invalid-answer coercion, and score reporting.
 - `src/services/question_processor.py`: embedding loading, pooling, cosine similarity, and connected-component clustering.
-- `src/prompts/templates.py`: Jinja prompt loading, rendering, and shared minimum-question targets for question generation plus evaluator context rendering.
+- `src/config/runtime_settings.py`: config-backed question minimum parsing, category ordering, and embedding toggle coercion.
+- `src/prompts/templates.py`: Jinja prompt loading, rendering, and config-backed minimum-question targets for question generation plus evaluator context rendering.
 - `src/providers/llm_provider.py`: abstract provider contract.
 - `src/providers/vllm_provider.py`: current concrete LLM provider.
 - `src/agents/agent_factory.py`: question-generation and evaluator agent selection plus streamed prompt execution.
@@ -136,7 +140,7 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - Transcript input is JSON with a top-level `segments` list.
 - Each segment currently contains `speaker`, `start_time`, `end_time`, and `text`.
 - Summary input is plain text with speaker-tagged blocks.
-- Prompt templates currently ask for a minimum of 200 questions per category.
+- Prompt templates now ask for the configured minimum question target per category, defaulting to 200.
 - Question generation receives transcript context only; the summary is reserved for evaluator prompts.
 - Question-generation output must be a raw JSON array of objects with `question_number`, `dimension`, and `question`.
 - Evaluator output must be a raw JSON array of objects with `question_number` and `answer`, where `answer` is `yes` or `no`.
@@ -152,8 +156,9 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - Provider abstraction exists, but only the vLLM path is implemented in practice.
 - `ConfigManager` writes config changes immediately, so UI config edits are persistent side effects.
 - The TUI config editor persists values as strings; `VLLMProvider` now coerces its numeric connection settings locally so timeout and retry values remain usable after in-app edits.
-- `QuestionProcessor` loads a large embedding model and can be slow or memory-intensive depending on device availability.
+- `QuestionProcessor` loads a large embedding model and can be slow or memory-intensive depending on device availability when `embedding.enabled` is true.
 - The question processor disables several Hugging Face and tokenizer progress or warning outputs to avoid corrupting the TUI display.
+- Setting `embedding.enabled` to false skips semantic deduplication entirely, avoids loading the embedding model, and leaves exact-duplicate plus off-rubric filtering as the remaining question-pruning steps.
 - `QuestionPipeline` uses a small canonicalization layer for boilerplate yes/no wrappers plus a narrow marker fallback when the model omits `dimension`. Keep that heuristic surface small and prefer prompt/schema improvements over expanding token lists.
 - `EvaluationPipeline` treats malformed or missing evaluator answers as `no`, so evaluation remains total-order deterministic even when the model under-produces.
 - The filtered question artifact is intentionally stable for downstream consumers, so evaluator metadata stays in the evaluation artifacts instead of changing `data/processed_questions.json`.

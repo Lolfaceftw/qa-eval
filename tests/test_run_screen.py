@@ -84,9 +84,12 @@ class FakeFailingProvider(FakePreparedProvider):
 class FakePipeline:
     """Return deterministic parsing and processing results."""
 
+    last_init_kwargs: dict[str, object] | None = None
+
     def __init__(self, *args, **kwargs) -> None:
         """Accept the production constructor signature."""
-        del args, kwargs
+        del args
+        type(self).last_init_kwargs = kwargs
 
     def parse_generation_response(
         self,
@@ -183,6 +186,31 @@ class FakeEvaluationPipeline:
         )
 
 
+class FakeMarkdownView:
+    """Capture incremental markdown appends from the run screen."""
+
+    def __init__(self) -> None:
+        """Initialize the collected append calls."""
+        self.append_calls: list[str] = []
+
+    async def append(self, markdown: str) -> None:
+        """Record the appended markdown fragment."""
+        self.append_calls.append(markdown)
+
+
+class FakeScrollContainer:
+    """Track scroll-to-end requests made after markdown flushes."""
+
+    def __init__(self) -> None:
+        """Initialize the scroll counter."""
+        self.scroll_end_calls = 0
+
+    def scroll_end(self, animate: bool = False) -> None:
+        """Record the scroll request."""
+        del animate
+        self.scroll_end_calls += 1
+
+
 def write_input_files(tmp_path: Path) -> tuple[Path, Path]:
     """Create minimal valid transcript and summary inputs."""
     transcript_path = tmp_path / "transcript.json"
@@ -240,6 +268,7 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
     provider = FakePreparedProvider()
     screen = screens.RunScreen()
     screen.accumulated_output = ""
+    FakePipeline.last_init_kwargs = None
 
     monkeypatch.setattr(
         screens,
@@ -295,10 +324,97 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
 
     assert provider.prepare_calls == 1
     assert provider.close_calls == 1
+    assert FakePipeline.last_init_kwargs is not None
+    assert FakePipeline.last_init_kwargs["semantic_dedup_enabled"] is True
+    assert FakePipeline.last_init_kwargs["requested_per_category"] == {
+        "factualness": 200,
+        "naturalness": 200,
+    }
     assert "Connected to" in screen.accumulated_output
     assert "Evaluation Report" in screen.accumulated_output
     assert "Global: score 1.000" in screen.accumulated_output
     assert "Run completed successfully" in screen.accumulated_output
+
+
+@pytest.mark.anyio
+async def test_run_pipeline_skips_embedding_model_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Skip QuestionProcessor construction when semantic deduplication is disabled."""
+    transcript_path, summary_path = write_input_files(tmp_path)
+    provider = FakePreparedProvider()
+    screen = screens.RunScreen()
+    screen.accumulated_output = ""
+    FakePipeline.last_init_kwargs = None
+
+    monkeypatch.setattr(
+        screens,
+        "ConfigManager",
+        lambda: FakeConfig(
+            {
+                "data.transcript_path": str(transcript_path),
+                "data.summary_path": str(summary_path),
+                "app.provider": "vllm",
+                "embedding.enabled": "false",
+                "questions.minimum": "125",
+            }
+        ),
+    )
+    monkeypatch.setattr(screens, "VLLMProvider", FakePreparedProvider)
+    monkeypatch.setattr(
+        screens.ProviderFactory,
+        "create_provider",
+        lambda provider_type="vllm": provider,
+    )
+    monkeypatch.setattr(
+        screens.DataProcessor,
+        "process_transcript",
+        lambda transcript: {"segments": len(transcript.segments)},
+    )
+
+    def fail_question_processor(*args, **kwargs) -> object:
+        del args, kwargs
+        raise AssertionError("QuestionProcessor should not be constructed")
+
+    monkeypatch.setattr(screens, "QuestionProcessor", fail_question_processor)
+    monkeypatch.setattr(screens, "QuestionPipeline", FakePipeline)
+    monkeypatch.setattr(screens, "EvaluationPipeline", FakeEvaluationPipeline)
+
+    async def fake_run_agent(
+        self,
+        agent_type: str,
+        provider_arg: object,
+        transcript_text: str,
+    ) -> str:
+        del self, provider_arg, transcript_text
+        return json.dumps(
+            [
+                {
+                    "question_number": 1,
+                    "dimension": "tone",
+                    "question": f"{agent_type} question?",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(screens.RunScreen, "_run_agent", fake_run_agent)
+    patch_file_io(monkeypatch, tmp_path)
+
+    await screen.run_pipeline()
+
+    assert provider.prepare_calls == 1
+    assert provider.close_calls == 1
+    assert FakePipeline.last_init_kwargs is not None
+    assert FakePipeline.last_init_kwargs["question_processor"] is None
+    assert FakePipeline.last_init_kwargs["semantic_dedup_enabled"] is False
+    assert FakePipeline.last_init_kwargs["requested_per_category"] == {
+        "factualness": 125,
+        "naturalness": 125,
+    }
+    assert "Semantic deduplication is disabled by `embedding.enabled`" in (
+        screen.accumulated_output
+    )
 
 
 @pytest.mark.anyio
@@ -379,3 +495,24 @@ async def test_stream_response_surfaces_waiting_status_and_first_token_latency()
     assert "First response chunk received in `1.234s`" in screen.accumulated_output
     assert "```json" in screen.accumulated_output
     assert "**Prompt + Answer / Max Context:** `654/4096`" in screen.accumulated_output
+
+
+@pytest.mark.anyio
+async def test_flush_pending_markdown_batches_incremental_updates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Append only new markdown fragments instead of rerendering the full buffer."""
+    screen = screens.RunScreen()
+    screen.results_view = FakeMarkdownView()
+    scroll_container = FakeScrollContainer()
+    screen._pending_markdown_fragments = ["## Title\n", "- line one\n", "- line two\n"]
+    screen._markdown_flush_event.set()
+
+    monkeypatch.setattr(screen, "query_one", lambda selector: scroll_container)
+
+    await screen._flush_pending_markdown()
+
+    assert screen.results_view.append_calls == ["## Title\n- line one\n- line two\n"]
+    assert screen._pending_markdown_fragments == []
+    assert not screen._markdown_flush_event.is_set()
+    assert scroll_container.scroll_end_calls == 1

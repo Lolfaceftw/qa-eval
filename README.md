@@ -1,6 +1,6 @@
 # qa-eval
 
-`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, deduplicates them with embeddings, evaluates the final question set against the summary, and writes JSON artifacts for downstream analysis.
+`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, optionally deduplicates them semantically with embeddings, evaluates the final question set against the summary, and writes JSON artifacts for downstream analysis.
 
 ## What It Does
 
@@ -11,7 +11,7 @@ The current pipeline:
 3. Renders transcript-only prompt templates for `factualness` and `naturalness`.
 4. Streams question generation from a vLLM-compatible endpoint using transcript context only.
 5. Parses and validates each model response as a raw JSON array of question objects.
-6. Filters off-rubric questions, canonicalizes boilerplate-heavy wording, and deduplicates similar questions globally with embeddings.
+6. Filters off-rubric questions, canonicalizes boilerplate-heavy wording, removes exact duplicates, and optionally deduplicates similar questions globally with embeddings.
 7. Writes the filtered question set to [`data/processed_questions.json`](data/processed_questions.json) and a filtering report to [`data/question_filter_report.json`](data/question_filter_report.json).
 8. Renders an evaluator prompt for each final category question set and streams strict yes/no answers from the same provider.
 9. Writes per-question answers to [`data/question_evaluations.json`](data/question_evaluations.json) and normalized category scores to [`data/evaluation_report.json`](data/evaluation_report.json).
@@ -38,7 +38,8 @@ Review and update [`cfg/config.yaml`](cfg/config.yaml) for your environment, esp
 - input file paths
 - prompt template paths
 - vLLM base URL, model, and connection settings
-- embedding model, threshold, and device
+- question minimums to request per category
+- embedding toggle, model, threshold, and device
 
 Run the TUI from the repository root:
 
@@ -66,6 +67,9 @@ data:
   transcript_path: data/transcript.json
   summary_path: data/summary.txt
 
+questions:
+  minimum: 200
+
 prompts:
   evaluator: docs/prompts/evaluator.j2
   factualness: docs/prompts/factualness.j2
@@ -87,6 +91,7 @@ vllm:
     max_retries: 1
 
 embedding:
+  enabled: true
   model: Qwen/Qwen3-Embedding-4B
   threshold: 0.85
   device: null
@@ -97,9 +102,11 @@ Notes:
 - `app.provider` currently defaults to `vllm` when omitted.
 - The run screen now validates `vllm.base_url` once with `models.list()` before starting generation and reuses that warmed connection for the agent requests.
 - During each streamed model call, the run screen now shows prompt token count, an explicit "request submitted / waiting for first chunk" status, and first-token latency before the JSON body starts rendering.
+- `questions.minimum` controls the default minimum question count requested for each generation category, and `questions.minimums.<category>` can override one category without changing the other.
 - `vllm.connection.preflight_timeout_seconds` limits the initial endpoint check, while `connect_timeout_seconds` and `read_timeout_seconds` control generation requests.
 - `vllm.connection.max_retries` is intentionally low by default so unhealthy endpoints fail fast instead of silently stalling.
 - Generated outputs under `data/` are treated as local artifacts; the checked-in transcript and summary inputs remain the only repo-tracked files in that directory.
+- `embedding.enabled: false` skips semantic deduplication and avoids loading the embedding model, while exact-duplicate and off-rubric filtering still run.
 - `embedding.device: null` enables automatic device selection (`cuda` when available, otherwise `cpu`).
 - Config edits made in the TUI are written back to disk immediately.
 
@@ -137,7 +144,7 @@ The current validator rejects summaries that do not contain speaker tags in the 
 
 Prompt templates live in [`docs/prompts/`](docs/prompts/). The current templates:
 
-- request a minimum of 200 questions for each category
+- request a configurable minimum number of questions for each category (default `200`)
 - require yes/no questions
 - keep question generation summary-independent by giving the generator transcript context only
 - require generated questions to be positively keyed so `yes` means the summary preserved the targeted signal
@@ -166,7 +173,7 @@ The filtered question artifact is written to [`data/processed_questions.json`](d
 }
 ```
 
-The pipeline also writes [`data/question_filter_report.json`](data/question_filter_report.json) with per-category counts for parsed, invalid, off-rubric, exact-duplicate, semantic-duplicate, cross-category-drop, and final-kept questions.
+The pipeline also writes [`data/question_filter_report.json`](data/question_filter_report.json) with per-category counts for parsed, invalid, off-rubric, exact-duplicate, semantic-duplicate, cross-category-drop, and final-kept questions. The global section also records whether semantic deduplication was enabled for that run.
 
 The per-question evaluation artifact is written to [`data/question_evaluations.json`](data/question_evaluations.json):
 

@@ -15,11 +15,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.config.runtime_settings import QUESTION_CATEGORIES
 from src.models.evaluation_models import (
     EvaluationAnswerPayload,
     EvaluableQuestionPayload,
 )
-from src.prompts.templates import QUESTION_REQUEST_MINIMUMS
 
 
 @dataclass(slots=True)
@@ -63,11 +63,11 @@ class EvaluationPipeline:
         responses_by_category: Mapping[str, str],
     ) -> ProcessedEvaluationBatch:
         """Evaluate all categories and return the answers artifact plus report."""
-        ordered_categories = list(QUESTION_REQUEST_MINIMUMS)
+        ordered_categories = list(QUESTION_CATEGORIES)
         ordered_categories.extend(
             category
             for category in questions_by_category
-            if category not in QUESTION_REQUEST_MINIMUMS
+            if category not in QUESTION_CATEGORIES
         )
 
         answers_by_category: dict[str, list[dict[str, Any]]] = {}
