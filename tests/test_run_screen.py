@@ -130,6 +130,59 @@ class FakePipeline:
         )
 
 
+class FakeEvaluationPipeline:
+    """Return deterministic evaluator outputs for run-screen tests."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Accept the production constructor signature."""
+        del args, kwargs
+
+    def process(
+        self,
+        questions_by_category: dict[str, list[dict[str, object]]],
+        responses_by_category: dict[str, str],
+    ) -> SimpleNamespace:
+        """Return one yes answer per question with a deterministic report."""
+        del responses_by_category
+        answers_by_category = {
+            category: [
+                {
+                    "question_number": question["question_number"],
+                    "question": question["question"],
+                    "answer": "yes",
+                }
+                for question in questions
+            ]
+            for category, questions in questions_by_category.items()
+        }
+        category_report = {
+            category: {
+                "total_questions": len(questions),
+                "yes_count": len(questions),
+                "no_count": 0,
+                "invalid_or_missing_count": 0,
+                "score": (1.0 if questions else None),
+            }
+            for category, questions in questions_by_category.items()
+        }
+        total_questions = sum(
+            report["total_questions"] for report in category_report.values()
+        )
+        return SimpleNamespace(
+            answers_by_category=answers_by_category,
+            report={
+                "global": {
+                    "total_questions": total_questions,
+                    "yes_count": total_questions,
+                    "no_count": 0,
+                    "invalid_or_missing_count": 0,
+                    "score": (1.0 if total_questions else None),
+                },
+                "categories": category_report,
+            },
+        )
+
+
 def write_input_files(tmp_path: Path) -> tuple[Path, Path]:
     """Create minimal valid transcript and summary inputs."""
     transcript_path = tmp_path / "transcript.json"
@@ -160,12 +213,18 @@ def patch_file_io(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Redirect generated artifact writes to the test temp directory."""
     processed_output = tmp_path / "processed_questions.json"
     report_output = tmp_path / "question_filter_report.json"
+    evaluations_output = tmp_path / "question_evaluations.json"
+    evaluation_report_output = tmp_path / "evaluation_report.json"
 
     def fake_open(path: str | Path, *args, **kwargs):
         if path == "data/processed_questions.json":
             return builtins.open(processed_output, *args, **kwargs)
         if path == "data/question_filter_report.json":
             return builtins.open(report_output, *args, **kwargs)
+        if path == "data/question_evaluations.json":
+            return builtins.open(evaluations_output, *args, **kwargs)
+        if path == "data/evaluation_report.json":
+            return builtins.open(evaluation_report_output, *args, **kwargs)
         return builtins.open(path, *args, **kwargs)
 
     monkeypatch.setattr(screens, "open", fake_open, raising=False)
@@ -210,6 +269,7 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
         lambda log_callback=None: object(),
     )
     monkeypatch.setattr(screens, "QuestionPipeline", FakePipeline)
+    monkeypatch.setattr(screens, "EvaluationPipeline", FakeEvaluationPipeline)
 
     async def fake_run_agent(
         self,
@@ -237,6 +297,8 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
     assert provider.prepare_calls == 1
     assert provider.close_calls == 1
     assert "Connected to" in screen.accumulated_output
+    assert "Evaluation Report" in screen.accumulated_output
+    assert "Global: score 1.000" in screen.accumulated_output
     assert "Run completed successfully" in screen.accumulated_output
 
 

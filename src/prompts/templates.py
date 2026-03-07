@@ -1,6 +1,9 @@
-"""Render prompt templates for the question-generation agents."""
+"""Render prompt templates for the application agents."""
+
+from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from jinja2 import Environment, FileSystemLoader
 
@@ -14,15 +17,16 @@ QUESTION_REQUEST_MINIMUMS: dict[str, int] = {
 
 
 class PromptRenderer:
-    """Uses Jinja2 to render prompts loaded from the filesystem."""
+    """Render Jinja2 prompts loaded from the filesystem."""
 
     @staticmethod
-    def render(agent_type: str, transcript: str, summary: str) -> str:
+    def render(template_name: str, **context: Any) -> str:
+        """Render the configured template with the supplied context values."""
         config = ConfigManager()
-        prompt_path_str = config.get(f"prompts.{agent_type}")
+        prompt_path_str = config.get(f"prompts.{template_name}")
 
         if not prompt_path_str:
-            raise ValueError(f"Prompt path for {agent_type} not found in config.")
+            raise ValueError(f"Prompt path for {template_name} not found in config.")
 
         root = Path(__file__).parent.parent.parent
         prompt_path = (root / prompt_path_str).resolve()
@@ -32,9 +36,10 @@ class PromptRenderer:
 
         env = Environment(loader=FileSystemLoader(str(prompt_path.parent)))
         template = env.get_template(prompt_path.name)
-
-        return template.render(
-            transcript=transcript,
-            summary=summary,
-            minimum_questions=QUESTION_REQUEST_MINIMUMS.get(agent_type, 200),
-        )
+        render_context = dict(context)
+        if template_name in QUESTION_REQUEST_MINIMUMS:
+            render_context.setdefault(
+                "minimum_questions",
+                QUESTION_REQUEST_MINIMUMS[template_name],
+            )
+        return template.render(**render_context)

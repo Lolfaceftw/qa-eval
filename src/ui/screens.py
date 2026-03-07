@@ -27,6 +27,7 @@ from src.prompts.templates import QUESTION_REQUEST_MINIMUMS
 from src.providers.llm_provider import LLMProvider
 from src.providers.vllm_provider import VLLMProvider
 from src.services.data_processor import DataProcessor
+from src.services.evaluation_pipeline import EvaluationPipeline
 from src.services.question_pipeline import QuestionPipeline
 from src.services.question_processor import QuestionProcessor
 
@@ -300,17 +301,49 @@ class RunScreen(Screen):
         summary_text: str,
     ) -> str:
         """Stream one agent response into the UI and return the raw text."""
-        title = agent_type.capitalize()
-        self.append_text(f"\n\n## {title} Agent\n---\n")
         agent = AgentFactory.create_agent(agent_type, provider)
+        response_stream = agent.generate_questions_stream(
+            transcript_text,
+            summary_text,
+        )
+        return await self._stream_response(
+            title=f"{agent_type.capitalize()} Agent",
+            response_stream=response_stream,
+        )
+
+    async def _run_evaluator(
+        self,
+        category: str,
+        provider: LLMProvider,
+        transcript_text: str,
+        summary_text: str,
+        questions: list[dict[str, Any]],
+    ) -> str:
+        """Stream one evaluator response into the UI and return the raw text."""
+        evaluator = AgentFactory.create_evaluator(provider)
+        response_stream = evaluator.generate_evaluation_stream(
+            category=category,
+            transcript_text=transcript_text,
+            summary_text=summary_text,
+            questions=questions,
+        )
+        return await self._stream_response(
+            title=f"{category.capitalize()} Evaluator",
+            response_stream=response_stream,
+        )
+
+    async def _stream_response(
+        self,
+        title: str,
+        response_stream: Any,
+    ) -> str:
+        """Render a streamed JSON-style model response in the results pane."""
+        self.append_text(f"\n\n## {title}\n---\n")
         response_content = ""
         is_json_block_open = False
 
         try:
-            async for chunk in agent.generate_questions_stream(
-                transcript_text,
-                summary_text,
-            ):
+            async for chunk in response_stream:
                 stripped_chunk = chunk.strip()
                 if stripped_chunk.startswith("PROMPT_TOKENS:"):
                     tokens = stripped_chunk.split(":")[1].strip()
@@ -456,6 +489,68 @@ class RunScreen(Screen):
                 self.append_text(
                     f"\n> [!ERROR]\n> **Error during deduplication:** {str(exc)}"
                 )
+                return
+
+            self.append_text("\n### 5. Evaluating Questions...\n")
+            evaluation_responses: dict[str, str] = {}
+            for category, questions in processed_results.items():
+                if not questions:
+                    self.append_text(
+                        "  - "
+                        f"Skipping {category} evaluation because no questions survived.\n"
+                    )
+                    continue
+                evaluation_responses[category] = await self._run_evaluator(
+                    category=category,
+                    provider=provider,
+                    transcript_text=transcript_text,
+                    summary_text=summary_text,
+                    questions=questions,
+                )
+
+            evaluation_pipeline = EvaluationPipeline(log_callback=self.append_text)
+            evaluation_batch = evaluation_pipeline.process(
+                questions_by_category=processed_results,
+                responses_by_category=evaluation_responses,
+            )
+
+            evaluations_path = "data/question_evaluations.json"
+            with open(evaluations_path, "w", encoding="utf-8") as file_handle:
+                json.dump(evaluation_batch.answers_by_category, file_handle, indent=2)
+
+            evaluation_report_path = "data/evaluation_report.json"
+            with open(evaluation_report_path, "w", encoding="utf-8") as file_handle:
+                json.dump(evaluation_batch.report, file_handle, indent=2)
+
+            self.append_text(
+                f"\n- **Question Evaluations:** [question_evaluations.json]({evaluations_path})\n"
+            )
+            self.append_text(
+                f"- **Evaluation Report:** [evaluation_report.json]({evaluation_report_path})\n"
+            )
+            for category, category_report in evaluation_batch.report["categories"].items():
+                score = category_report["score"]
+                formatted_score = "null" if score is None else f"{score:.3f}"
+                self.append_text(
+                    "  - "
+                    f"{category.capitalize()}: score {formatted_score} "
+                    f"({category_report['yes_count']} yes / "
+                    f"{category_report['total_questions']} total, "
+                    f"invalid or missing: {category_report['invalid_or_missing_count']}).\n"
+                )
+
+            global_score = evaluation_batch.report["global"]["score"]
+            formatted_global_score = (
+                "null" if global_score is None else f"{global_score:.3f}"
+            )
+            self.append_text(
+                "  - "
+                f"Global: score {formatted_global_score} "
+                f"({evaluation_batch.report['global']['yes_count']} yes / "
+                f"{evaluation_batch.report['global']['total_questions']} total, "
+                f"invalid or missing: "
+                f"{evaluation_batch.report['global']['invalid_or_missing_count']}).\n"
+            )
 
             self.append_text("\n\n---\n**Run completed successfully.**")
 

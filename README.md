@@ -1,6 +1,6 @@
 # qa-eval
 
-`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, deduplicates them with embeddings, and writes the final question set to JSON artifacts for downstream evaluation.
+`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, deduplicates them with embeddings, evaluates the final question set against the summary, and writes JSON artifacts for downstream analysis.
 
 ## What It Does
 
@@ -12,7 +12,9 @@ The current pipeline:
 4. Streams question generation from a vLLM-compatible endpoint.
 5. Parses and validates each model response as a raw JSON array of question objects.
 6. Filters off-rubric questions, canonicalizes boilerplate-heavy wording, and deduplicates similar questions globally with embeddings.
-7. Writes the final result to [`data/processed_questions.json`](data/processed_questions.json) and a filtering report to [`data/question_filter_report.json`](data/question_filter_report.json).
+7. Writes the filtered question set to [`data/processed_questions.json`](data/processed_questions.json) and a filtering report to [`data/question_filter_report.json`](data/question_filter_report.json).
+8. Renders an evaluator prompt for each final category question set and streams strict yes/no answers from the same provider.
+9. Writes per-question answers to [`data/question_evaluations.json`](data/question_evaluations.json) and normalized category scores to [`data/evaluation_report.json`](data/evaluation_report.json).
 
 The project is aimed at information-loss evaluation. The transcript is treated as ground truth, and the generated questions focus on what the summary omitted or failed to preserve.
 
@@ -65,6 +67,7 @@ data:
   summary_path: data/summary.txt
 
 prompts:
+  evaluator: docs/prompts/evaluator.j2
   factualness: docs/prompts/factualness.j2
   naturalness: docs/prompts/naturalness.j2
 
@@ -135,19 +138,21 @@ Prompt templates live in [`docs/prompts/`](docs/prompts/). The current templates
 
 - request a minimum of 200 questions for each category
 - require yes/no questions
+- require generated questions to be positively keyed so `yes` means the summary preserved the targeted signal
 - require a category `dimension` for each generated question
 - focus on information loss relative to the transcript
 - expect the model to return a raw JSON array
 - keep `factualness` and `naturalness` disjoint so naturalness questions stay about tone, flow, pacing, voice, or personality instead of factual entity recall
+- use `docs/prompts/evaluator.j2` to answer the final questions with strict `yes` or `no`
 
-The final output artifact is written to [`data/processed_questions.json`](data/processed_questions.json) and has this shape:
+The filtered question artifact is written to [`data/processed_questions.json`](data/processed_questions.json) and has this shape:
 
 ```json
 {
   "factualness": [
     {
       "question_number": 1,
-      "question": "Is a key fact from the transcript missing from the summary?"
+      "question": "Would a reviewer still know a key fact from the transcript after reading the summary?"
     }
   ],
   "naturalness": [
@@ -160,6 +165,51 @@ The final output artifact is written to [`data/processed_questions.json`](data/p
 ```
 
 The pipeline also writes [`data/question_filter_report.json`](data/question_filter_report.json) with per-category counts for parsed, invalid, off-rubric, exact-duplicate, semantic-duplicate, cross-category-drop, and final-kept questions.
+
+The per-question evaluation artifact is written to [`data/question_evaluations.json`](data/question_evaluations.json):
+
+```json
+{
+  "factualness": [
+    {
+      "question_number": 1,
+      "question": "Would a reviewer still know a key fact from the transcript after reading the summary?",
+      "answer": "yes"
+    }
+  ]
+}
+```
+
+The scoring artifact is written to [`data/evaluation_report.json`](data/evaluation_report.json) and stores normalized 0-1 scores per category:
+
+```json
+{
+  "global": {
+    "total_questions": 2,
+    "yes_count": 1,
+    "no_count": 1,
+    "invalid_or_missing_count": 0,
+    "score": 0.5
+  },
+  "categories": {
+    "factualness": {
+      "total_questions": 1,
+      "yes_count": 1,
+      "no_count": 0,
+      "invalid_or_missing_count": 0,
+      "score": 1.0
+    }
+  }
+}
+```
+
+Scoring semantics:
+
+- `yes` means the summary preserved the asked factual or naturalness signal.
+- `no` means the summary did not preserve it.
+- invalid or missing evaluator answers are counted as `no` and are also tracked in `invalid_or_missing_count`.
+- a category score is `yes_count / total_questions`.
+- if a category has zero final questions, its score is `null`.
 
 ## Repository Layout
 
@@ -185,7 +235,9 @@ Key files:
 - [`src/ui/screens.py`](src/ui/screens.py): UI screens and pipeline orchestration
 - [`src/config/config_manager.py`](src/config/config_manager.py): YAML config loading and persistence
 - [`src/models/question_models.py`](src/models/question_models.py): validation models for raw generated question payloads
+- [`src/models/evaluation_models.py`](src/models/evaluation_models.py): validation models for evaluator inputs and strict yes/no outputs
 - [`src/services/question_pipeline.py`](src/services/question_pipeline.py): post-generation parsing, filtering, renumbering, and reporting
+- [`src/services/evaluation_pipeline.py`](src/services/evaluation_pipeline.py): evaluator-response alignment and normalized scoring
 - [`src/services/question_processor.py`](src/services/question_processor.py): embedding-backed similarity processing
 - [`src/providers/vllm_provider.py`](src/providers/vllm_provider.py): vLLM-compatible LLM client
 
@@ -204,6 +256,7 @@ Current development notes:
 
 - The repository uses `uv` as the package manager and `ruff` as the linter.
 - The repository now includes a pytest regression suite for question parsing and deduplication behavior.
+- The repository now includes evaluator parsing and scoring regression coverage.
 - The provider abstraction exists, but the implemented runtime path is currently the vLLM provider with a one-time preflight and warmed HTTP client per run.
 - If you change code in a way that affects behavior, interfaces, setup, outputs, workflows, or operator expectations, update the relevant Markdown documentation in the same change.
 - If you materially change runtime flow, tooling, prompts, configuration semantics, or file ownership, also update [`coder_docs/codebase_guide.md`](coder_docs/codebase_guide.md).
