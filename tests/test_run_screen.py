@@ -353,3 +353,30 @@ async def test_run_pipeline_aborts_before_agents_when_preflight_fails(
     assert not run_agent_called
     assert "preflight failed" in screen.accumulated_output
     assert "Error during run" in screen.accumulated_output
+
+
+@pytest.mark.anyio
+async def test_stream_response_surfaces_waiting_status_and_first_token_latency() -> None:
+    """Render explicit stream lifecycle updates before the JSON body."""
+
+    async def fake_stream():
+        yield "PROMPT_TOKENS:321\n"
+        yield "STREAM_STATUS:REQUEST_SUBMITTED\n"
+        yield "FIRST_TOKEN_LATENCY:1.234\n"
+        yield '[{"question_number": 1}]'
+        yield "\nTOTAL_STATS:654/4096\n"
+
+    screen = screens.RunScreen()
+    screen.accumulated_output = ""
+
+    response_text = await screen._stream_response(
+        title="Factualness Agent",
+        response_stream=fake_stream(),
+    )
+
+    assert response_text == '[{"question_number": 1}]'
+    assert "**Prompt Tokens:** `321`" in screen.accumulated_output
+    assert "Request submitted to the model" in screen.accumulated_output
+    assert "First response chunk received in `1.234s`" in screen.accumulated_output
+    assert "```json" in screen.accumulated_output
+    assert "**Prompt + Answer / Max Context:** `654/4096`" in screen.accumulated_output

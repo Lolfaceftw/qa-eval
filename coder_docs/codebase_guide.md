@@ -93,6 +93,7 @@ The app is oriented around information-loss evaluation. The prompts ask for yes/
 
 - `RunScreen._run_agent()` streams output and expects the model to return a raw JSON array.
 - `RunScreen._run_evaluator()` streams evaluator output and expects a raw JSON array of `question_number` and `answer`.
+- `RunScreen._stream_response()` now surfaces stream lifecycle markers before the JSON body: prompt tokens, request-submitted waiting status, first-token latency, then final prompt-plus-answer context usage.
 - `RunScreen.run_pipeline()` prepares the provider once before question generation, reuses it for evaluation, reports the validated endpoint/model/latency in the UI, and closes the shared client in a `finally` block.
 - `src/services/question_pipeline.py` extracts the first JSON array it can decode, validates each item with Pydantic, canonicalizes boilerplate-heavy phrasing, filters off-rubric naturalness questions, deduplicates exact matches globally, then performs global semantic deduplication.
 - Semantic deduplication uses `src/services/question_processor.py`, which loads a Hugging Face embedding model, computes attention-mask-aware pooled sentence embeddings, normalizes them, and clusters near-duplicates with cosine similarity.
@@ -119,6 +120,7 @@ The app is oriented around information-loss evaluation. The prompts ask for yes/
 - `src/providers/llm_provider.py`: abstract provider contract.
 - `src/providers/vllm_provider.py`: current concrete LLM provider.
 - `src/agents/agent_factory.py`: question-generation and evaluator agent selection plus streamed prompt execution.
+- `src/agents/agent_factory.py`: question-generation and evaluator agent selection plus streamed prompt execution, including stream lifecycle markers for UI status updates.
 - `docs/prompts/*.j2`: prompt specs for question generation and strict evaluator yes/no output.
 - `cfg/config.yaml`: runtime configuration source.
 - `data/transcript.json`: transcript input artifact.

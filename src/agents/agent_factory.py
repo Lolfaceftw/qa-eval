@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import json
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from typing import AsyncGenerator
 
 from src.providers.llm_provider import LLMProvider
 from src.prompts.templates import PromptRenderer
+
+PROMPT_TOKENS_PREFIX = "PROMPT_TOKENS:"
+STREAM_STATUS_PREFIX = "STREAM_STATUS:"
+FIRST_TOKEN_LATENCY_PREFIX = "FIRST_TOKEN_LATENCY:"
+TOTAL_STATS_PREFIX = "TOTAL_STATS:"
 
 
 class BaseAgent(ABC):
@@ -21,10 +27,18 @@ class BaseAgent(ABC):
     async def _stream_prompt(self, prompt: str) -> AsyncGenerator[str, None]:
         """Yield the prompt statistics and streamed model response."""
         prompt_tokens = self.provider.count_tokens(prompt)
-        yield f"PROMPT_TOKENS:{prompt_tokens}\n"
+        yield f"{PROMPT_TOKENS_PREFIX}{prompt_tokens}\n"
+
+        request_started_at = time.perf_counter()
+        yield f"{STREAM_STATUS_PREFIX}REQUEST_SUBMITTED\n"
 
         response_content = ""
+        received_first_chunk = False
         async for chunk in self.provider.generate_stream(prompt):
+            if not received_first_chunk:
+                first_token_latency = time.perf_counter() - request_started_at
+                yield f"{FIRST_TOKEN_LATENCY_PREFIX}{first_token_latency:.3f}\n"
+                received_first_chunk = True
             response_content += chunk
             yield chunk
 
@@ -32,7 +46,7 @@ class BaseAgent(ABC):
         total_tokens = prompt_tokens + response_tokens
         max_ctx = self.provider.max_context
 
-        yield f"\nTOTAL_STATS:{total_tokens}/{max_ctx}\n"
+        yield f"\n{TOTAL_STATS_PREFIX}{total_tokens}/{max_ctx}\n"
 
 
 class QuestionGenerationAgent(BaseAgent, ABC):

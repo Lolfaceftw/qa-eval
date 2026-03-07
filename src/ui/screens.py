@@ -20,7 +20,13 @@ from textual.widgets import (
     TextArea,
 )
 
-from src.agents.agent_factory import AgentFactory
+from src.agents.agent_factory import (
+    AgentFactory,
+    FIRST_TOKEN_LATENCY_PREFIX,
+    PROMPT_TOKENS_PREFIX,
+    STREAM_STATUS_PREFIX,
+    TOTAL_STATS_PREFIX,
+)
 from src.config.config_manager import ConfigManager
 from src.models.data_models import Summary, Transcript
 from src.prompts.templates import QUESTION_REQUEST_MINIMUMS
@@ -345,10 +351,21 @@ class RunScreen(Screen):
         try:
             async for chunk in response_stream:
                 stripped_chunk = chunk.strip()
-                if stripped_chunk.startswith("PROMPT_TOKENS:"):
+                if stripped_chunk.startswith(PROMPT_TOKENS_PREFIX):
                     tokens = stripped_chunk.split(":")[1].strip()
                     self.append_text(f"**Prompt Tokens:** `{tokens}`\n\n")
-                elif stripped_chunk.startswith("TOTAL_STATS:"):
+                elif stripped_chunk.startswith(STREAM_STATUS_PREFIX):
+                    status = stripped_chunk.removeprefix(STREAM_STATUS_PREFIX)
+                    if status == "REQUEST_SUBMITTED":
+                        self.append_text(
+                            "- Request submitted to the model. Waiting for the first response chunk...\n\n"
+                        )
+                elif stripped_chunk.startswith(FIRST_TOKEN_LATENCY_PREFIX):
+                    latency = stripped_chunk.removeprefix(FIRST_TOKEN_LATENCY_PREFIX)
+                    self.append_text(
+                        f"- First response chunk received in `{latency}s`.\n\n"
+                    )
+                elif stripped_chunk.startswith(TOTAL_STATS_PREFIX):
                     if is_json_block_open:
                         self.append_text("\n```\n")
                         is_json_block_open = False
