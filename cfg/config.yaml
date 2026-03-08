@@ -3,15 +3,18 @@ api_keys:
 data:
   summary_path: data/summary.txt
   transcript_path: data/transcript.json
+questions:
+  minimum: 200
 prompts:
+  evaluator: docs/prompts/evaluator.j2
   factualness: docs/prompts/factualness.j2
   naturalness: docs/prompts/naturalness.j2
 
 ui:
   css_path: src/ui/css/style.tcss
 vllm:
-  base_url: http://localhost:8000/v1
-  model: Qwen/Qwen3.5-35B-A3B
+  base_url: http://202.92.159.240:8000/v1
+  model: Qwen/Qwen3.5-27B
   max_context: 262144
   connection:
     preflight_timeout_seconds: 5.0
@@ -22,6 +25,7 @@ vllm:
     max_retries: 1
 
 embedding:
+  enabled: false
   model: Qwen/Qwen3-Embedding-4B
   threshold: 0.85
   device: null # auto-detect (cuda/cpu)

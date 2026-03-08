@@ -5,14 +5,18 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
 
+from src.config.runtime_settings import (
+    DEFAULT_QUESTION_REQUEST_MINIMUM,
+    QUESTION_CATEGORIES,
+    get_question_request_minimums,
+)
 from src.models.question_models import GeneratedQuestionPayload
-from src.prompts.templates import QUESTION_REQUEST_MINIMUMS
 from src.services.question_processor import QuestionProcessor
 
 FACTUALNESS_DIMENSIONS = {
@@ -164,12 +168,18 @@ class QuestionPipeline:
 
     def __init__(
         self,
-        question_processor: QuestionProcessor,
+        question_processor: QuestionProcessor | None,
         log_callback: Callable[[str], None] | None = None,
+        semantic_dedup_enabled: bool = True,
+        requested_per_category: Mapping[str, int] | None = None,
     ) -> None:
-        """Initialize the pipeline with an embedding-backed processor."""
+        """Initialize the pipeline with optional semantic deduplication."""
         self.question_processor = question_processor
         self.log_callback = log_callback
+        self.semantic_dedup_enabled = semantic_dedup_enabled
+        if requested_per_category is None:
+            requested_per_category = get_question_request_minimums()
+        self.requested_per_category = dict(requested_per_category)
 
     def _log(self, message: str) -> None:
         """Emit a UI-friendly log line."""
@@ -185,7 +195,10 @@ class QuestionPipeline:
         payload_items = self._extract_json_array(response_text)
 
         report: dict[str, Any] = {
-            "requested": QUESTION_REQUEST_MINIMUMS.get(category, 200),
+            "requested": self.requested_per_category.get(
+                category,
+                DEFAULT_QUESTION_REQUEST_MINIMUM,
+            ),
             "raw_items": len(payload_items),
             "validated": 0,
             "invalid": 0,
@@ -264,19 +277,32 @@ class QuestionPipeline:
         exact_winners, exact_removed = self._select_cluster_winners(exact_components)
         self._apply_duplicate_metrics(report, exact_removed, bucket="exact_duplicates")
 
-        semantic_components = self.question_processor.find_similar_components(
-            [question.canonical_question for question in exact_winners]
-        )
-        semantic_groups = [
-            [exact_winners[index] for index in component]
-            for component in semantic_components
-        ]
-        final_candidates, semantic_removed = self._select_cluster_winners(semantic_groups)
-        self._apply_duplicate_metrics(
-            report,
-            semantic_removed,
-            bucket="semantic_duplicates",
-        )
+        if self.semantic_dedup_enabled:
+            if self.question_processor is None:
+                raise ValueError(
+                    "Semantic deduplication is enabled but no question processor "
+                    "was configured."
+                )
+            semantic_components = self.question_processor.find_similar_components(
+                [question.canonical_question for question in exact_winners]
+            )
+            semantic_groups = [
+                [exact_winners[index] for index in component]
+                for component in semantic_components
+            ]
+            final_candidates, semantic_removed = self._select_cluster_winners(
+                semantic_groups
+            )
+            self._apply_duplicate_metrics(
+                report,
+                semantic_removed,
+                bucket="semantic_duplicates",
+            )
+        else:
+            final_candidates = list(exact_winners)
+            self._log(
+                "Skipped semantic deduplication because `embedding.enabled` is false."
+            )
 
         final_candidates.sort(
             key=lambda question: (
@@ -406,7 +432,10 @@ class QuestionPipeline:
         categories: dict[str, dict[str, Any]] = {}
         total_parsed = 0
         for category, questions in questions_by_category.items():
-            requested = QUESTION_REQUEST_MINIMUMS.get(category, 200)
+            requested = self.requested_per_category.get(
+                category,
+                DEFAULT_QUESTION_REQUEST_MINIMUM,
+            )
             parsed = len(questions)
             total_parsed += parsed
             categories[category] = {
@@ -423,7 +452,8 @@ class QuestionPipeline:
 
         return {
             "global": {
-                "requested_per_category": dict(QUESTION_REQUEST_MINIMUMS),
+                "requested_per_category": dict(self.requested_per_category),
+                "semantic_dedup_enabled": self.semantic_dedup_enabled,
                 "parsed": total_parsed,
                 "off_rubric": 0,
                 "exact_duplicates": 0,
@@ -484,7 +514,7 @@ class QuestionPipeline:
             questions_by_category[question.source_category].append(question)
 
         serialized: dict[str, list[dict[str, Any]]] = {}
-        for category in QUESTION_REQUEST_MINIMUMS:
+        for category in QUESTION_CATEGORIES:
             category_questions = sorted(
                 questions_by_category.get(category, []),
                 key=lambda question: question.original_order,

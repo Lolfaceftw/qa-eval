@@ -1,13 +1,14 @@
 Create at least {{ minimum_questions }} questions for factualness.
 
-The transcript is the ground truth. The evaluator will compare the transcript and the summary.
+The transcript is the ground truth. The evaluator will later compare the transcript and the summary, but you must build a summary-independent benchmark from the transcript alone.
 
 Category contract:
-- Ask only about omitted or altered content from the summary.
+- Ask only about transcript details that a faithful summary should preserve.
+- Do not inspect, infer, or speculate about a candidate summary.
+- Phrase each question so that `yes` means a summary preserved the targeted transcript detail.
 - Stay within these dimensions only: attribution, numerical_detail, chronology, causality, qualification, action_outcome, entity_relation.
 - Each question must target a distinct coverage item from the transcript.
 - Every question must be answerable by yes or no.
-- Vary openings across the full set. Do not let most questions begin with the same two words.
 - Do not create paired questions like (1) "Does X say Y in the transcript?" and (2) "Does X say Y in the summary?"
 - Do not restate the same topic with helper-verb swaps such as mention, include, reference, cover, or discuss.
 - Do not ask about tone, flow, transitions, pacing, or personality. Those belong to naturalness.
@@ -21,11 +22,8 @@ attachments:
 Transcript:
 {{ transcript }}
 
-Summary:
-{{ summary }}
-
 The model output should be a raw JSON array:
 [
-  {"question_number": 1, "dimension": "attribution", "question": "Would a reviewer know which speaker made the claim about market intelligence after reading the summary?"},
+  {"question_number": 1, "dimension": "attribution", "question": "Would a reviewer still know which speaker made the claim about market intelligence after reading the summary?"},
   ...
 ]

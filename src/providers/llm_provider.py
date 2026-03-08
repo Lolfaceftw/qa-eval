@@ -1,7 +1,17 @@
 """Provider interfaces for LLM-backed question generation."""
 
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
+from typing import Literal
+
+
+@dataclass(frozen=True, slots=True)
+class LLMStreamEvent:
+    """Describe one streamed output fragment from an LLM provider."""
+
+    kind: Literal["content", "reasoning"]
+    text: str
 
 
 class LLMProvider(ABC):
@@ -13,8 +23,11 @@ class LLMProvider(ABC):
         pass
 
     @abstractmethod
-    async def generate_stream(self, prompt: str) -> AsyncGenerator[str, None]:
-        """Generate text from the LLM, yielding tokens as they arrive."""
+    async def generate_stream(
+        self,
+        prompt: str,
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
+        """Generate text from the LLM, yielding typed stream events."""
         pass
 
     @abstractmethod

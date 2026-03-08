@@ -8,6 +8,7 @@ import httpx
 import pytest
 from openai import APIConnectionError, APITimeoutError
 
+from src.providers.llm_provider import LLMStreamEvent
 from src.providers.vllm_provider import (
     VLLMConfigurationError,
     VLLMGenerationError,
@@ -286,6 +287,55 @@ async def test_prepare_raises_timeout_with_actionable_guidance() -> None:
         match="preflight_timeout_seconds",
     ):
         await provider.prepare()
+
+    await provider.close()
+
+
+@pytest.mark.anyio
+async def test_generate_stream_yields_reasoning_and_content_events() -> None:
+    """Expose reasoning deltas separately from answer content deltas."""
+    provider, _ = make_provider(
+        make_config(),
+        FakeClient(
+            model_ids=["Qwen/Qwen3.5-35B-A3B"],
+            stream_chunks=[
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(content="", reasoning=None)
+                        )
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content=None,
+                                reasoning="Thinking...",
+                            )
+                        )
+                    ]
+                ),
+                SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            delta=SimpleNamespace(
+                                content="{",
+                                reasoning_content=None,
+                            )
+                        )
+                    ]
+                ),
+            ],
+        ),
+    )
+
+    events = [event async for event in provider.generate_stream("Reply with JSON.")]
+
+    assert events == [
+        LLMStreamEvent(kind="reasoning", text="Thinking..."),
+        LLMStreamEvent(kind="content", text="{"),
+    ]
 
     await provider.close()
 

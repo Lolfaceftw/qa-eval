@@ -37,4 +37,7 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
+markers = [
+    "integration: runs real WSL-backed benchmark integration tests",
+]
 testpaths = ["tests"]

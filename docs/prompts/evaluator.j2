@@ -1,0 +1,34 @@
+Evaluate how well the summary preserves the transcript for the {{ category }} category.
+
+The transcript is the ground truth.
+
+Evaluation rules:
+- Answer every question using only `yes` or `no`.
+- Answer `yes` only when the summary preserves the requested information or naturalness behavior in a way that is supported by the transcript.
+- Answer `no` when the summary omits the information, changes it materially, weakens the naturalness signal, or when the evidence is ambiguous.
+- Do not explain your answers.
+- Do not skip questions.
+- Keep the same question_number values that were provided.
+
+Output rules:
+- Return a raw JSON array only.
+- Each object must include question_number and answer.
+- The answer value must be exactly `yes` or `no`.
+
+Category:
+{{ category }}
+
+Questions:
+{{ questions_json }}
+
+Transcript:
+{{ transcript }}
+
+Summary:
+{{ summary }}
+
+The model output should be a raw JSON array:
+[
+  {"question_number": 1, "answer": "yes"},
+  {"question_number": 2, "answer": "no"}
+]

@@ -51,9 +51,15 @@ class StubQuestionProcessor:
 
 def make_pipeline(
     duplicate_groups: Sequence[set[str]] | None = None,
+    *,
+    semantic_dedup_enabled: bool = True,
 ) -> QuestionPipeline:
     """Create a pipeline backed by the deterministic stub processor."""
-    return QuestionPipeline(StubQuestionProcessor(duplicate_groups))
+    processor = StubQuestionProcessor(duplicate_groups) if semantic_dedup_enabled else None
+    return QuestionPipeline(
+        processor,
+        semantic_dedup_enabled=semantic_dedup_enabled,
+    )
 
 
 def test_canonicalize_question_removes_boilerplate() -> None:
@@ -156,6 +162,62 @@ def test_process_prefers_factualness_for_cross_category_duplicates() -> None:
         processed_batch.report["categories"]["naturalness"]["cross_category_drops"] == 1
     )
     assert processed_batch.report["categories"]["naturalness"]["semantic_duplicates"] == 1
+
+
+def test_process_skips_semantic_deduplication_when_disabled() -> None:
+    """Keep semantically similar questions when embeddings are disabled."""
+    factual_question = "Is the podcast name Rational Reminder mentioned in the summary?"
+    naturalness_question = "Is Rational Reminder the podcast name included?"
+    duplicate_groups = [
+        {
+            canonicalize_question(factual_question),
+            canonicalize_question(naturalness_question),
+        }
+    ]
+    pipeline = make_pipeline(
+        duplicate_groups,
+        semantic_dedup_enabled=False,
+    )
+
+    factualness_batch = pipeline.parse_generation_response(
+        "factualness",
+        f"""
+        [
+          {{"question_number": 1, "dimension": "entity_relation", "question": "{factual_question}"}}
+        ]
+        """,
+    )
+    naturalness_batch = pipeline.parse_generation_response(
+        "naturalness",
+        f"""
+        [
+          {{"question_number": 1, "dimension": "tone", "question": "{naturalness_question}"}}
+        ]
+        """,
+    )
+
+    processed_batch = pipeline.process(
+        {
+            "factualness": factualness_batch.questions,
+            "naturalness": naturalness_batch.questions,
+        }
+    )
+
+    assert processed_batch.questions_by_category["factualness"] == [
+        {
+            "question_number": 1,
+            "question": factual_question,
+        }
+    ]
+    assert processed_batch.questions_by_category["naturalness"] == [
+        {
+            "question_number": 1,
+            "question": naturalness_question,
+        }
+    ]
+    assert processed_batch.report["global"]["semantic_dedup_enabled"] is False
+    assert processed_batch.report["global"]["semantic_duplicates"] == 0
+    assert processed_batch.report["categories"]["naturalness"]["cross_category_drops"] == 0
 
 
 def test_process_renumbers_questions_sequentially_after_filtering() -> None:
