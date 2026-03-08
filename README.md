@@ -1,6 +1,6 @@
 # qa-eval
 
-`qa-eval` is a Textual-based terminal UI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, optionally deduplicates them semantically with embeddings, evaluates the final question set against the summary, and writes JSON artifacts for downstream analysis.
+`qa-eval` is a Textual-based terminal UI and batch CLI for evaluating how much information a summary loses relative to a transcript. It generates large sets of yes/no review questions from a vLLM-compatible model, validates and filters them, optionally deduplicates them semantically with embeddings, evaluates the final question set against one or more summaries, and writes JSON or CSV artifacts for downstream analysis.
 
 ## What It Does
 
@@ -45,6 +45,12 @@ Run the TUI from the repository root:
 
 ```bash
 uv run python src/main.py
+```
+
+Run batch folder evaluation from the repository root:
+
+```bash
+uv run python src/main.py --summaries summaries
 ```
 
 The main menu lets you:
@@ -100,8 +106,11 @@ embedding:
 Notes:
 
 - `app.provider` currently defaults to `vllm` when omitted.
+- `uv run python src/main.py --summaries <folder>` ignores `data.summary_path`, evaluates every direct child `*-summary.xml` file in the folder, and writes `summary_evaluation_results.csv` there.
+- Batch mode now streams benchmark-generation and evaluator output to the terminal as it arrives, including prompt-token counts, first-visible-chunk latency, reasoning blocks when available, answer chunks, and final context-usage stats.
 - The run screen now validates `vllm.base_url` once with `models.list()` before starting generation and reuses that warmed connection for the agent requests.
-- During each streamed model call, the run screen now shows prompt token count, an explicit "request submitted / waiting for first chunk" status, and first-token latency before the JSON body starts rendering.
+- During each streamed model call, the run screen now shows prompt token count, an explicit "request submitted / waiting for first visible chunk" status, and latency to the first visible response content before the stream body starts rendering.
+- When the model emits reasoning tokens, the run screen now streams them in a separate `Reasoning` block before the final `Answer` JSON block so parsing still consumes only the answer body.
 - `questions.minimum` controls the default minimum question count requested for each generation category, and `questions.minimums.<category>` can override one category without changing the other.
 - `vllm.connection.preflight_timeout_seconds` limits the initial endpoint check, while `connect_timeout_seconds` and `read_timeout_seconds` control generation requests.
 - `vllm.connection.max_retries` is intentionally low by default so unhealthy endpoints fail fast instead of silently stalling.
@@ -131,14 +140,63 @@ The transcript file must be JSON with a top-level `segments` list:
 
 ### Summary
 
-The summary file is plain text, but it must include speaker tags such as `<SPEAKER_00>`:
+The summary file is plain text, but it must include speaker tags such as
+`<SPEAKER_00>`. Opening tags may also carry XML-style attributes:
 
 ```xml
-<SPEAKER_00>Example summary text.</SPEAKER_00>
-<SPEAKER_01>Another speaker block.</SPEAKER_01>
+<SPEAKER_00 emo_preset="upbeat">Example summary text.</SPEAKER_00>
+<SPEAKER_01 emo_preset="engaged">Another speaker block.</SPEAKER_01>
 ```
 
-The current validator rejects summaries that do not contain speaker tags in the `<SPEAKER_XX>` format.
+The validator rejects summaries that do not contain speaker tags in the
+`<SPEAKER_XX>` family. Both bare tags like `<SPEAKER_00>` and attributed opening
+tags like `<SPEAKER_00 emo_preset="upbeat">` are accepted.
+
+### Batch Summary Folder
+
+Batch mode expects direct child filenames under the provided folder to follow:
+
+```text
+<summarizer>_<critic>-summary.xml
+```
+
+Model names may contain underscores. Batch mode infers valid model IDs from any
+self-pair files such as `qwen3_5_4b_qwen3_5_4b-summary.xml`, then uses those IDs
+to split the rest of the filenames safely. If a file cannot be split
+unambiguously, it is recorded as an error row in the CSV instead of being
+guessed.
+
+## External Benchmarks
+
+The repository also includes a WSL-backed QAFactEval harness under
+[`other_bench/`](other_bench/). It evaluates the real summaries in
+[`other_bench/candidate_summaries/`](other_bench/candidate_summaries/) against
+the ground-truth transcript in
+[`other_bench/ground_truth_transcript/transcript.json`](other_bench/ground_truth_transcript/transcript.json)
+and writes [`other_bench/qafacteval_results.csv`](other_bench/qafacteval_results.csv).
+After the first successful model-prep pass, the harness reuses a local ready
+marker so later runs can skip the repeated WSL asset/cache-preparation step.
+The scorer now phase-loads and explicitly offloads the generation, QA, and Quip
+models between stages to reduce peak VRAM pressure, and it chunks the upstream
+QA answer pass to avoid crashing the WSL worker on the real benchmark input.
+
+Requirements:
+
+- Windows host with WSL2 Ubuntu available
+- `uv` installed inside WSL
+- network access for the first-time QAFactEval environment sync and model download
+
+Run it from the repo root:
+
+```bash
+uv run python other_bench/quest_eval_qa_fact_eval.py
+```
+
+For real end-to-end verification, use the explicit integration test:
+
+```bash
+uv run pytest -m integration
+```
 
 ## Prompt And Output Expectations
 
@@ -220,6 +278,18 @@ Scoring semantics:
 - a category score is `yes_count / total_questions`.
 - if a category has zero final questions, its score is `null`.
 
+Batch mode writes [`summary_evaluation_results.csv`](summary_evaluation_results.csv)
+into the supplied folder. It generates the transcript-grounded benchmark once,
+reuses it across every summary in the folder, and records one row per file with:
+
+- `summary_file`, `summarizer`, `critic`, `status`, `error_message`
+- global totals and score
+- factualness totals and score
+- naturalness totals and score
+
+If a particular file fails filename parsing, summary validation, or evaluation,
+its row is written with `status=error` and blank metric columns.
+
 ## Repository Layout
 
 ```text
@@ -227,6 +297,7 @@ qa-eval/
 |-- cfg/config.yaml
 |-- docs/prompts/
 |-- data/
+|-- other_bench/
 |-- src/
 |   |-- agents/
 |   |-- config/
@@ -240,15 +311,19 @@ qa-eval/
 
 Key files:
 
-- [`src/main.py`](src/main.py): Textual app bootstrap
-- [`src/ui/screens.py`](src/ui/screens.py): UI screens and pipeline orchestration
+- [`src/main.py`](src/main.py): CLI dispatch for TUI or batch folder evaluation
+- [`src/ui/screens.py`](src/ui/screens.py): UI screens and TUI artifact rendering
 - [`src/config/config_manager.py`](src/config/config_manager.py): YAML config loading and persistence
 - [`src/models/question_models.py`](src/models/question_models.py): validation models for raw generated question payloads
 - [`src/models/evaluation_models.py`](src/models/evaluation_models.py): validation models for evaluator inputs and strict yes/no outputs
+- [`src/providers/factory.py`](src/providers/factory.py): provider selection outside the UI layer
+- [`src/services/evaluation_workflow.py`](src/services/evaluation_workflow.py): shared transcript loading, benchmark generation, and summary evaluation workflow
+- [`src/services/batch_summary_evaluator.py`](src/services/batch_summary_evaluator.py): folder scanning, filename parsing, and CSV writing for batch mode
 - [`src/services/question_pipeline.py`](src/services/question_pipeline.py): post-generation parsing, filtering, renumbering, and reporting
 - [`src/services/evaluation_pipeline.py`](src/services/evaluation_pipeline.py): evaluator-response alignment and normalized scoring
 - [`src/services/question_processor.py`](src/services/question_processor.py): embedding-backed similarity processing
 - [`src/providers/vllm_provider.py`](src/providers/vllm_provider.py): vLLM-compatible LLM client
+- [`other_bench/quest_eval_qa_fact_eval.py`](other_bench/quest_eval_qa_fact_eval.py): WSL-backed QAFactEval benchmark orchestrator for the repo-local external benchmark set
 
 ## Development
 
@@ -259,6 +334,7 @@ uv sync --dev
 uv run python src/main.py
 uv run ruff check .
 uv run pytest
+uv run pytest -m integration
 ```
 
 Current development notes:

@@ -6,7 +6,7 @@ This file is the project-local map of the current codebase. Update it whenever t
 
 ## Purpose
 
-`qa-eval` is a Textual-based TUI for evaluating how well a summary preserves information from a transcript. The current workflow:
+`qa-eval` is a Textual-based TUI plus batch CLI for evaluating how well a summary preserves information from a transcript. The current workflow:
 
 1. Loads a transcript JSON file and a summary text file from config.
 2. Validates them with Pydantic models.
@@ -26,6 +26,7 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `uv` is the package manager. Use it for sync, run, add, remove, and lock operations.
 - `ruff` is the linter. Current baseline is clean with `uv run ruff check .`.
 - The current runtime entrypoint is `uv run python src/main.py`.
+- `uv run python src/main.py --summaries <folder>` runs batch mode, evaluates every direct child `*-summary.xml` file in the folder, and writes `summary_evaluation_results.csv` there.
 - The repository uses `src/...` imports without `__init__.py` files. Run commands from the repo root so imports resolve consistently.
 - `README.md` now provides the primary onboarding, setup, and usage overview. Use this guide for architecture, runtime flow, and file ownership details.
 - For robustness-sensitive formulas, algorithms, heuristics, or scoring logic, use `coder_docs/academic_standards.md` as the authoritative methodology and citation policy. Avoid uncited "magic formulas" and prefer journal-backed methods first.
@@ -36,21 +37,38 @@ The app is oriented around information-loss evaluation. The transcript is the on
 
 ## Runtime Flow
 
-### 1. App bootstrap
+### 1. App bootstrap and CLI dispatch
 
-- `src/main.py` defines `QAEvalApp`, a `textual.app.App`.
-- On startup it reads `ui.css_path` from `cfg/config.yaml`, resolves it relative to the project root, and mounts `MainMenuScreen`.
+- `src/main.py` parses CLI arguments first.
+- Without flags, it launches the Textual app, reads `ui.css_path` from `cfg/config.yaml`, resolves it relative to the project root, and mounts `MainMenuScreen`.
+- With `--summaries <folder>`, it skips the TUI and runs `SummaryBatchEvaluator`.
 
 ### 2. UI layer
 
 - `src/ui/screens.py` contains the working TUI.
 - `MainMenuScreen` routes to run, config, or exit.
 - `ConfigScreen` flattens nested config keys and edits values through the singleton config manager.
-- `RunScreen` owns streaming and file IO, then delegates question parsing/filtering to `QuestionPipeline` and answer alignment/scoring to `EvaluationPipeline`.
+- `RunScreen` owns streaming and file IO, then delegates transcript loading, benchmark generation, and summary evaluation to `EvaluationWorkflow`.
 - `RunScreen` now buffers streamed markdown fragments and flushes them into Textual's incremental `Markdown.append()` path instead of rerendering the entire results document on a timer.
 - `FileViewScreen` opens linked files from the run output for inspection.
 
-### 3. Config and data loading
+### 3. Batch layer
+
+- `src/services/batch_summary_evaluator.py` scans the requested folder non-recursively for `*-summary.xml`.
+- Batch mode infers `<summarizer>` and `<critic>` from filenames by seeding known model IDs from self-pair files such as `<id>_<id>-summary.xml`.
+- Batch mode builds the transcript-grounded benchmark once, reuses it for every valid summary file, writes one CSV row per file, and records per-file failures as `status=error` rows instead of aborting the whole batch.
+- Batch mode now streams question-generation and evaluator output directly to stdout, including prompt-token counts, waiting/latency markers, reasoning chunks when present, answer chunks, and final context-usage stats.
+
+### 4. External benchmark layer
+
+- `other_bench/quest_eval_qa_fact_eval.py` is a separate benchmark harness for the repo-local QAFactEval comparison set.
+- The script runs from the Windows host but executes official QAFactEval inside WSL2 Ubuntu through an isolated `uv` project rooted at `other_bench/`.
+- The benchmark-local environment is defined by `other_bench/pyproject.toml` and `other_bench/uv.lock`.
+- The harness normalizes `other_bench/ground_truth_transcript/transcript.json` and the tagged summaries in `other_bench/candidate_summaries/`, downloads official QAFactEval model assets into `other_bench/models/qafacteval`, and writes `other_bench/qafacteval_results.csv`.
+- After the first successful asset-preparation pass, the harness writes a ready marker under `other_bench/models/qafacteval/` so later runs can skip the repeated WSL model/cache bootstrap.
+- The repo-local `other_bench/qafacteval.py` wrapper now avoids upstream eager QA-model construction at init time, phase-loads the generation model, QA model, and Quip scorer separately, chunks the deduplicated QA answer pass, and explicitly offloads models between phases to reduce peak GPU memory usage and keep the real one-summary benchmark stable.
+
+### 5. Config and data loading
 
 - `src/config/config_manager.py` is a singleton wrapper around `cfg/config.yaml`.
 - `ConfigManager.get()` reads dot-delimited keys.
@@ -64,19 +82,20 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `prompts.evaluator` points at the strict yes/no evaluator template used after question filtering.
 - The code also supports `app.provider` for provider selection, but the current `cfg/config.yaml` relies on the default provider fallback of `vllm`.
 - The repo tracks `data/transcript.json` and `data/summary.txt` as inputs, while other `data/` artifacts are local outputs and should stay ignored.
+- Batch mode still uses `data.transcript_path` from config, but it ignores `data.summary_path` and reads summaries from the supplied folder instead.
 
-### 4. Validation and preprocessing
+### 6. Validation and preprocessing
 
 - `src/models/data_models.py` defines:
   - `TranscriptSegment`
   - `Transcript`
   - `Summary`
-- `Summary` validates that the content contains speaker tags such as `<SPEAKER_00>`.
-- `src/services/data_processor.py` converts the transcript into a speaker-to-utterances mapping and can extract speaker blocks from tagged summaries.
+- `Summary` validates that the content contains speaker tags such as `<SPEAKER_00>` or attributed opening tags such as `<SPEAKER_00 emo_preset="upbeat">`.
+- `src/services/data_processor.py` converts the transcript into a speaker-to-utterances mapping and can extract speaker blocks from tagged summaries while ignoring optional opening-tag attributes.
 - `src/models/question_models.py` validates raw question payloads returned by the LLM before they reach deduplication.
 - `src/models/evaluation_models.py` validates processed questions before evaluation and strict yes/no evaluator payloads after generation.
 
-### 5. Prompt rendering and generation
+### 7. Prompt rendering and generation
 
 - `src/prompts/templates.py` resolves prompt template paths from config and renders them with Jinja2.
 - Prompt templates live under `docs/prompts/`.
@@ -88,16 +107,18 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - The question-generation contract is transcript-only and requires the LLM to return `question_number`, `dimension`, and `question` for each item.
 - Question-generation prompts are now positively keyed so `yes` means the summary preserved the targeted factual or naturalness signal.
 - `src/providers/llm_provider.py` defines the provider lifecycle and generation interface.
-- `src/providers/vllm_provider.py` is the only implemented provider today. It uses `openai.AsyncOpenAI` against a vLLM-compatible base URL, performs a one-time `models.list()` preflight, reuses a tuned `httpx.AsyncClient`, and counts tokens with `tiktoken`.
+- `src/providers/factory.py` selects the concrete provider without importing the UI layer.
+- `src/providers/vllm_provider.py` is the only implemented provider today. It uses `openai.AsyncOpenAI` against a vLLM-compatible base URL, performs a one-time `models.list()` preflight, reuses a tuned `httpx.AsyncClient`, counts tokens with `tiktoken`, and surfaces reasoning deltas separately from answer-content deltas when the upstream server emits them.
 - `src/agents/agent_factory.py` maps question-generation categories plus the evaluator stage to prompt rendering and shared streamed provider output.
 
-### 6. Parsing, filtering, deduplication, evaluation, and output
+### 8. Parsing, filtering, deduplication, evaluation, and output
 
 - `RunScreen._run_agent()` streams output and expects the model to return a raw JSON array.
 - `RunScreen._run_evaluator()` streams evaluator output and expects a raw JSON array of `question_number` and `answer`.
-- `RunScreen._stream_response()` now surfaces stream lifecycle markers before the JSON body: prompt tokens, request-submitted waiting status, first-token latency, then final prompt-plus-answer context usage.
+- `RunScreen._stream_response()` now surfaces stream lifecycle markers before the streamed body: prompt tokens, request-submitted waiting status, latency to the first visible response chunk, a separate reasoning block when the provider emits reasoning deltas, then the final answer JSON block plus total prompt-and-streamed-output context usage.
 - The run-results pane uses a small buffered flush loop with incremental markdown appends so large streamed outputs do not trigger full-document markdown reparses every refresh tick.
-- `RunScreen.run_pipeline()` prepares the provider once before question generation, reuses it for evaluation, reports the validated endpoint/model/latency in the UI, and closes the shared client in a `finally` block.
+- `src/services/evaluation_workflow.py` loads transcript and summary inputs, prepares the provider once, builds the shared benchmark, and evaluates summaries against it.
+- `RunScreen.run_pipeline()` now uses `EvaluationWorkflow`, still reports the validated endpoint/model/latency in the UI, writes the single-run JSON artifacts under `data/`, and closes the shared provider in a `finally` block.
 - `src/services/question_pipeline.py` extracts the first JSON array it can decode, validates each item with Pydantic, canonicalizes boilerplate-heavy phrasing, filters off-rubric naturalness questions, deduplicates exact matches globally, then optionally performs global semantic deduplication depending on `embedding.enabled`.
 - Semantic deduplication uses `src/services/question_processor.py`, which loads a Hugging Face embedding model, computes attention-mask-aware pooled sentence embeddings, normalizes them, and clusters near-duplicates with cosine similarity.
 - Representative selection is deterministic: `factualness` wins over `naturalness`, then richer canonical questions win, then earlier order wins.
@@ -106,25 +127,32 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `src/services/evaluation_pipeline.py` aligns evaluator answers by `question_number`, keeps the first valid answer per known question, coerces invalid or missing answers to `no`, and computes normalized per-category scores.
 - Question evaluations are written to `data/question_evaluations.json`.
 - Scoring metrics are written to `data/evaluation_report.json`.
+- Batch mode writes only `summary_evaluation_results.csv` to the supplied folder; it does not write per-summary JSON artifacts.
 
 ## Important Files And Responsibilities
 
-- `src/main.py`: application bootstrap and CSS path resolution.
-- `src/ui/screens.py`: TUI screens, config editing, run orchestration, result rendering, and artifact writes.
+- `src/main.py`: CLI dispatch for TUI or batch folder evaluation.
+- `src/ui/screens.py`: TUI screens, config editing, streamed result rendering, and single-run artifact writes.
 - `src/config/config_manager.py`: singleton config load/save interface.
 - `src/models/data_models.py`: transcript and summary validation models.
 - `src/models/question_models.py`: validation models for generated question payloads.
 - `src/models/evaluation_models.py`: validation models for evaluator inputs and strict yes/no outputs.
 - `src/services/data_processor.py`: transcript and summary preprocessing helpers.
+- `src/services/evaluation_workflow.py`: shared transcript loading, provider preparation, benchmark generation, and summary evaluation.
+- `src/services/batch_summary_evaluator.py`: batch folder scanning, filename parsing, CSV row generation, and aggregate CSV writes.
 - `src/services/question_pipeline.py`: parsing, category-fit filtering, exact deduplication, semantic deduplication, renumbering, and report generation.
 - `src/services/evaluation_pipeline.py`: evaluator-response parsing, answer alignment, invalid-answer coercion, and score reporting.
 - `src/services/question_processor.py`: embedding loading, pooling, cosine similarity, and connected-component clustering.
 - `src/config/runtime_settings.py`: config-backed question minimum parsing, category ordering, and embedding toggle coercion.
 - `src/prompts/templates.py`: Jinja prompt loading, rendering, and config-backed minimum-question targets for question generation plus evaluator context rendering.
+- `src/providers/factory.py`: provider selection outside the UI layer.
 - `src/providers/llm_provider.py`: abstract provider contract.
 - `src/providers/vllm_provider.py`: current concrete LLM provider.
 - `src/agents/agent_factory.py`: question-generation and evaluator agent selection plus streamed prompt execution.
 - `src/agents/agent_factory.py`: question-generation and evaluator agent selection plus streamed prompt execution, including stream lifecycle markers for UI status updates.
+- `other_bench/quest_eval_qa_fact_eval.py`: Windows-hosted, WSL-executed QAFactEval benchmark runner for the external benchmark set.
+- `other_bench/pyproject.toml`: isolated Linux-only benchmark dependency set for QAFactEval.
+- `other_bench/uv.lock`: locked benchmark environment for the WSL runner.
 - `docs/prompts/*.j2`: prompt specs for question generation and strict evaluator yes/no output.
 - `cfg/config.yaml`: runtime configuration source.
 - `data/transcript.json`: transcript input artifact.
@@ -139,7 +167,9 @@ The app is oriented around information-loss evaluation. The transcript is the on
 
 - Transcript input is JSON with a top-level `segments` list.
 - Each segment currently contains `speaker`, `start_time`, `end_time`, and `text`.
-- Summary input is plain text with speaker-tagged blocks.
+- Summary input is plain text with speaker-tagged blocks. Opening speaker tags may include optional XML-style attributes such as `emo_preset`.
+- Batch summary filenames must end with `-summary.xml` and are expected to follow `<summarizer>_<critic>-summary.xml`.
+- Batch mode infers model IDs from folder-local self-pairs such as `<id>_<id>-summary.xml` before splitting the rest of the filenames.
 - Prompt templates now ask for the configured minimum question target per category, defaulting to 200.
 - Question generation receives transcript context only; the summary is reserved for evaluator prompts.
 - Question-generation output must be a raw JSON array of objects with `question_number`, `dimension`, and `question`.
@@ -147,9 +177,11 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `factualness` questions must stay on transcript details that a faithful summary should preserve.
 - `naturalness` questions must stay on tone, flow, pacing, voice, transitions, hedging, emphasis, or speaker personality.
 - Generated questions should be phrased so a `yes` answer means the summary preserved the targeted signal.
+- Generation prompts intentionally avoid forced lead-in variation instructions because they can trigger repetitive reasoning loops in some models.
 - The public output artifact strips internal metadata and keeps only `question_number` and `question`.
 - The evaluation artifact preserves `question_number`, `question`, and final `answer` per category.
 - Category scores are normalized as `yes_count / total_questions`; invalid or missing evaluator answers count as `no`, and zero-question categories report `null`.
+- Batch CSV rows include summary metadata plus global, factualness, and naturalness totals and scores. Per-file failures keep blank metric columns and `status=error`.
 
 ## Current Constraints And Watchouts
 
@@ -162,6 +194,8 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `QuestionPipeline` uses a small canonicalization layer for boilerplate yes/no wrappers plus a narrow marker fallback when the model omits `dimension`. Keep that heuristic surface small and prefer prompt/schema improvements over expanding token lists.
 - `EvaluationPipeline` treats malformed or missing evaluator answers as `no`, so evaluation remains total-order deterministic even when the model under-produces.
 - The filtered question artifact is intentionally stable for downstream consumers, so evaluator metadata stays in the evaluation artifacts instead of changing `data/processed_questions.json`.
+- Batch mode reuses one benchmark across the whole folder run. If benchmark generation fails, the batch stops before writing per-summary scores.
+- The external QAFactEval harness still loads large models sequentially and can spend noticeable time in the final Quip scoring stage; recent logs now surface per-phase timings and a GPU-memory-based Quip batch-size choice to make that hotspot easier to diagnose.
 
 ## Standard Developer Commands
 
@@ -169,6 +203,8 @@ The app is oriented around information-loss evaluation. The transcript is the on
 - `uv run python src/main.py`
 - `uv run ruff check .`
 - `uv run pytest`
+- `uv run python other_bench/quest_eval_qa_fact_eval.py`
+- `uv run pytest -m integration`
 
 ## When This Document Must Be Updated
 

@@ -1,0 +1,10 @@
+summary_file,summarizer,critic,status,error_message,global_total_questions,global_yes_count,global_no_count,global_invalid_or_missing_count,global_score,factualness_total_questions,factualness_yes_count,factualness_no_count,factualness_invalid_or_missing_count,factualness_score,naturalness_total_questions,naturalness_yes_count,naturalness_no_count,naturalness_invalid_or_missing_count,naturalness_score
+qwen3_5_27b_qwen3_5_27b-summary.xml,qwen3_5_27b,qwen3_5_27b,ok,,399,48,351,0,0.12030075187969924,199,48,151,0,0.24120603015075376,200,0,200,0,0.0
+qwen3_5_27b_qwen3_5_4b-summary.xml,qwen3_5_27b,qwen3_5_4b,ok,,399,47,352,0,0.11779448621553884,199,47,152,0,0.23618090452261306,200,0,200,0,0.0
+qwen3_5_27b_qwen3_5_9b-summary.xml,qwen3_5_27b,qwen3_5_9b,ok,,399,108,291,0,0.2706766917293233,199,36,163,0,0.18090452261306533,200,72,128,0,0.36
+qwen3_5_4b_deepseek_reasoner-summary.xml,qwen3_5_4b,deepseek_reasoner,ok,,399,64,335,0,0.16040100250626566,199,41,158,0,0.20603015075376885,200,23,177,0,0.115
+qwen3_5_4b_qwen3_5_4b-summary.xml,qwen3_5_4b,qwen3_5_4b,ok,,399,68,331,0,0.17042606516290726,199,51,148,0,0.2562814070351759,200,17,183,0,0.085
+qwen3_5_4b_qwen3_5_9b-summary.xml,qwen3_5_4b,qwen3_5_9b,ok,,399,89,310,0,0.22305764411027568,199,20,179,0,0.10050251256281408,200,69,131,0,0.345
+qwen3_5_9b_qwen3_5_27b-summary.xml,qwen3_5_9b,qwen3_5_27b,ok,,399,110,289,0,0.2756892230576441,199,44,155,0,0.22110552763819097,200,66,134,0,0.33
+qwen3_5_9b_qwen3_5_4b-summary.xml,qwen3_5_9b,qwen3_5_4b,ok,,399,88,311,0,0.22055137844611528,199,33,166,0,0.1658291457286432,200,55,145,0,0.275
+qwen3_5_9b_qwen3_5_9b-summary.xml,qwen3_5_9b,qwen3_5_9b,ok,,399,114,285,0,0.2857142857142857,199,51,148,0,0.2562814070351759,200,63,137,0,0.315

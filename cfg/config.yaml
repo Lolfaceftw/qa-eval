@@ -13,8 +13,8 @@ prompts:
 ui:
   css_path: src/ui/css/style.tcss
 vllm:
-  base_url: http://202.92.159.240:8001/v1
-  model: Qwen/Qwen3.5-35B-A3B
+  base_url: http://202.92.159.240:8000/v1
+  model: Qwen/Qwen3.5-27B
   max_context: 262144
   connection:
     preflight_timeout_seconds: 5.0

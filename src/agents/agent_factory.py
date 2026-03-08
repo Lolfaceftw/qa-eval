@@ -13,7 +13,8 @@ from src.prompts.templates import PromptRenderer
 
 PROMPT_TOKENS_PREFIX = "PROMPT_TOKENS:"
 STREAM_STATUS_PREFIX = "STREAM_STATUS:"
-FIRST_TOKEN_LATENCY_PREFIX = "FIRST_TOKEN_LATENCY:"
+FIRST_VISIBLE_CHUNK_LATENCY_PREFIX = "FIRST_VISIBLE_CHUNK_LATENCY:"
+REASONING_CHUNK_PREFIX = "REASONING_CHUNK:"
 TOTAL_STATS_PREFIX = "TOTAL_STATS:"
 
 
@@ -32,17 +33,28 @@ class BaseAgent(ABC):
         request_started_at = time.perf_counter()
         yield f"{STREAM_STATUS_PREFIX}REQUEST_SUBMITTED\n"
 
-        response_content = ""
-        received_first_chunk = False
-        async for chunk in self.provider.generate_stream(prompt):
-            if not received_first_chunk:
-                first_token_latency = time.perf_counter() - request_started_at
-                yield f"{FIRST_TOKEN_LATENCY_PREFIX}{first_token_latency:.3f}\n"
-                received_first_chunk = True
-            response_content += chunk
-            yield chunk
+        streamed_output = ""
+        received_first_visible_chunk = False
+        async for event in self.provider.generate_stream(prompt):
+            if not received_first_visible_chunk:
+                if event.text.strip():
+                    first_visible_chunk_latency = (
+                        time.perf_counter() - request_started_at
+                    )
+                    yield (
+                        f"{FIRST_VISIBLE_CHUNK_LATENCY_PREFIX}"
+                        f"{first_visible_chunk_latency:.3f}\n"
+                    )
+                    received_first_visible_chunk = True
 
-        response_tokens = self.provider.count_tokens(response_content)
+            streamed_output += event.text
+            if event.kind == "reasoning":
+                yield f"{REASONING_CHUNK_PREFIX}{json.dumps(event.text)}\n"
+                continue
+
+            yield event.text
+
+        response_tokens = self.provider.count_tokens(streamed_output)
         total_tokens = prompt_tokens + response_tokens
         max_ctx = self.provider.max_context
 

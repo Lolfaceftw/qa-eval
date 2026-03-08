@@ -9,6 +9,8 @@ wheels/
 
 # Virtual environments
 .venv
+other_bench/.venv/
+other_bench/.cache/
 
 # Local agent state
 .agents/
@@ -18,3 +20,6 @@ data/*
 !data/summary.txt
 !data/transcript.json
 artifacts/quality/
+other_bench/models/
+other_bench/qafacteval_results.csv
+other_bench/test_outputs/

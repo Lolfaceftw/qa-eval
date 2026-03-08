@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 import src.ui.screens as screens
+import src.services.evaluation_workflow as workflow_module
+from src.agents.agent_factory import REASONING_CHUNK_PREFIX
 from src.providers.vllm_provider import VLLMPreparationError
 
 
@@ -281,24 +283,32 @@ async def test_run_pipeline_prepares_provider_once_and_closes_it(
             }
         ),
     )
-    monkeypatch.setattr(screens, "VLLMProvider", FakePreparedProvider)
     monkeypatch.setattr(
         screens.ProviderFactory,
         "create_provider",
         lambda provider_type="vllm": provider,
     )
     monkeypatch.setattr(
-        screens.DataProcessor,
+        workflow_module.DataProcessor,
         "process_transcript",
         lambda transcript: {"segments": len(transcript.segments)},
     )
     monkeypatch.setattr(
-        screens,
+        workflow_module,
+        "VLLMProvider",
+        FakePreparedProvider,
+    )
+    monkeypatch.setattr(
+        workflow_module,
         "QuestionProcessor",
         lambda log_callback=None: object(),
     )
-    monkeypatch.setattr(screens, "QuestionPipeline", FakePipeline)
-    monkeypatch.setattr(screens, "EvaluationPipeline", FakeEvaluationPipeline)
+    monkeypatch.setattr(workflow_module, "QuestionPipeline", FakePipeline)
+    monkeypatch.setattr(
+        workflow_module,
+        "EvaluationPipeline",
+        FakeEvaluationPipeline,
+    )
 
     async def fake_run_agent(
         self,
@@ -361,25 +371,33 @@ async def test_run_pipeline_skips_embedding_model_when_disabled(
             }
         ),
     )
-    monkeypatch.setattr(screens, "VLLMProvider", FakePreparedProvider)
     monkeypatch.setattr(
         screens.ProviderFactory,
         "create_provider",
         lambda provider_type="vllm": provider,
     )
     monkeypatch.setattr(
-        screens.DataProcessor,
+        workflow_module.DataProcessor,
         "process_transcript",
         lambda transcript: {"segments": len(transcript.segments)},
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "VLLMProvider",
+        FakePreparedProvider,
     )
 
     def fail_question_processor(*args, **kwargs) -> object:
         del args, kwargs
         raise AssertionError("QuestionProcessor should not be constructed")
 
-    monkeypatch.setattr(screens, "QuestionProcessor", fail_question_processor)
-    monkeypatch.setattr(screens, "QuestionPipeline", FakePipeline)
-    monkeypatch.setattr(screens, "EvaluationPipeline", FakeEvaluationPipeline)
+    monkeypatch.setattr(workflow_module, "QuestionProcessor", fail_question_processor)
+    monkeypatch.setattr(workflow_module, "QuestionPipeline", FakePipeline)
+    monkeypatch.setattr(
+        workflow_module,
+        "EvaluationPipeline",
+        FakeEvaluationPipeline,
+    )
 
     async def fake_run_agent(
         self,
@@ -440,16 +458,20 @@ async def test_run_pipeline_aborts_before_agents_when_preflight_fails(
             }
         ),
     )
-    monkeypatch.setattr(screens, "VLLMProvider", FakeFailingProvider)
     monkeypatch.setattr(
         screens.ProviderFactory,
         "create_provider",
         lambda provider_type="vllm": provider,
     )
     monkeypatch.setattr(
-        screens.DataProcessor,
+        workflow_module.DataProcessor,
         "process_transcript",
         lambda transcript: {"segments": len(transcript.segments)},
+    )
+    monkeypatch.setattr(
+        workflow_module,
+        "VLLMProvider",
+        FakeFailingProvider,
     )
 
     async def fake_run_agent(*args, **kwargs) -> str:
@@ -471,13 +493,14 @@ async def test_run_pipeline_aborts_before_agents_when_preflight_fails(
 
 
 @pytest.mark.anyio
-async def test_stream_response_surfaces_waiting_status_and_first_token_latency() -> None:
-    """Render explicit stream lifecycle updates before the JSON body."""
+async def test_stream_response_surfaces_reasoning_and_answer_separately() -> None:
+    """Render streamed reasoning separately from the answer JSON body."""
 
     async def fake_stream():
         yield "PROMPT_TOKENS:321\n"
         yield "STREAM_STATUS:REQUEST_SUBMITTED\n"
-        yield "FIRST_TOKEN_LATENCY:1.234\n"
+        yield "FIRST_VISIBLE_CHUNK_LATENCY:1.234\n"
+        yield f'{REASONING_CHUNK_PREFIX}"Thinking about the answer..."\n'
         yield '[{"question_number": 1}]'
         yield "\nTOTAL_STATS:654/4096\n"
 
@@ -491,10 +514,18 @@ async def test_stream_response_surfaces_waiting_status_and_first_token_latency()
 
     assert response_text == '[{"question_number": 1}]'
     assert "**Prompt Tokens:** `321`" in screen.accumulated_output
-    assert "Request submitted to the model" in screen.accumulated_output
-    assert "First response chunk received in `1.234s`" in screen.accumulated_output
+    assert "Waiting for the first visible response chunk" in screen.accumulated_output
+    assert "First visible response chunk received in `1.234s`" in (
+        screen.accumulated_output
+    )
+    assert "**Reasoning**" in screen.accumulated_output
+    assert "Thinking about the answer..." in screen.accumulated_output
+    assert "**Answer**" in screen.accumulated_output
     assert "```json" in screen.accumulated_output
-    assert "**Prompt + Answer / Max Context:** `654/4096`" in screen.accumulated_output
+    assert (
+        "**Prompt + Streamed Output / Max Context:** `654/4096`"
+        in screen.accumulated_output
+    )
 
 
 @pytest.mark.anyio

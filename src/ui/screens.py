@@ -23,36 +23,16 @@ from textual.widgets import (
 
 from src.agents.agent_factory import (
     AgentFactory,
-    FIRST_TOKEN_LATENCY_PREFIX,
+    FIRST_VISIBLE_CHUNK_LATENCY_PREFIX,
     PROMPT_TOKENS_PREFIX,
+    REASONING_CHUNK_PREFIX,
     STREAM_STATUS_PREFIX,
     TOTAL_STATS_PREFIX,
 )
 from src.config.config_manager import ConfigManager
-from src.config.runtime_settings import (
-    QUESTION_CATEGORIES,
-    get_question_request_minimum,
-    get_question_request_minimums,
-    is_embedding_enabled,
-)
-from src.models.data_models import Summary, Transcript
 from src.providers.llm_provider import LLMProvider
-from src.providers.vllm_provider import VLLMProvider
-from src.services.data_processor import DataProcessor
-from src.services.evaluation_pipeline import EvaluationPipeline
-from src.services.question_pipeline import QuestionPipeline
-from src.services.question_processor import QuestionProcessor
-
-
-class ProviderFactory:
-    """Create language-model providers from config values."""
-
-    @staticmethod
-    def create_provider(provider_type: str = "vllm") -> LLMProvider:
-        """Return the configured provider implementation."""
-        if provider_type.lower() == "vllm":
-            return VLLMProvider()
-        raise ValueError(f"Unknown provider type: {provider_type}")
+from src.providers.factory import ProviderFactory
+from src.services.evaluation_workflow import EvaluationWorkflow
 
 
 def flatten_dict(
@@ -264,57 +244,6 @@ class RunScreen(Screen):
             self._pending_markdown_fragments.append(text)
             self._markdown_flush_event.set()
 
-    @staticmethod
-    def _failed_parse_report(
-        category: str,
-        error: Exception,
-        requested: int | None = None,
-    ) -> dict[str, Any]:
-        """Create a fallback parse report when a category response cannot be parsed."""
-        resolved_requested = requested
-        if resolved_requested is None:
-            resolved_requested = get_question_request_minimum(category)
-        return {
-            "requested": resolved_requested,
-            "raw_items": 0,
-            "validated": 0,
-            "invalid": 1,
-            "invalid_examples": [str(error)],
-        }
-
-    @staticmethod
-    def _merge_parse_reports(
-        report: dict[str, Any],
-        parse_reports: dict[str, dict[str, Any]],
-    ) -> dict[str, Any]:
-        """Merge parse-time metrics into the final filtering report."""
-        report["global"]["raw_items"] = 0
-        report["global"]["invalid"] = 0
-
-        for category, parse_report in parse_reports.items():
-            category_report = report["categories"].setdefault(
-                category,
-                {
-                    "requested": parse_report.get("requested", 200),
-                    "parsed": 0,
-                    "off_rubric": 0,
-                    "off_rubric_examples": [],
-                    "exact_duplicates": 0,
-                    "semantic_duplicates": 0,
-                    "cross_category_drops": 0,
-                    "final": 0,
-                    "shortfall": parse_report.get("requested", 200),
-                },
-            )
-            category_report["raw_items"] = parse_report["raw_items"]
-            category_report["invalid"] = parse_report["invalid"]
-            category_report["invalid_examples"] = parse_report["invalid_examples"]
-            category_report["parsed"] = parse_report["validated"]
-            report["global"]["raw_items"] += parse_report["raw_items"]
-            report["global"]["invalid"] += parse_report["invalid"]
-
-        return report
-
     def on_markdown_link_clicked(self, event: MarkdownWidget.LinkClicked) -> None:
         """Open linked artifacts in the file viewer screen."""
         event.prevent_default()
@@ -377,6 +306,7 @@ class RunScreen(Screen):
         """Render a streamed JSON-style model response in the results pane."""
         self.append_text(f"\n\n## {title}\n---\n")
         response_content = ""
+        is_reasoning_block_open = False
         is_json_block_open = False
 
         try:
@@ -389,28 +319,49 @@ class RunScreen(Screen):
                     status = stripped_chunk.removeprefix(STREAM_STATUS_PREFIX)
                     if status == "REQUEST_SUBMITTED":
                         self.append_text(
-                            "- Request submitted to the model. Waiting for the first response chunk...\n\n"
+                            "- Request submitted to the model. Waiting for the first visible response chunk...\n\n"
                         )
-                elif stripped_chunk.startswith(FIRST_TOKEN_LATENCY_PREFIX):
-                    latency = stripped_chunk.removeprefix(FIRST_TOKEN_LATENCY_PREFIX)
-                    self.append_text(
-                        f"- First response chunk received in `{latency}s`.\n\n"
+                elif stripped_chunk.startswith(FIRST_VISIBLE_CHUNK_LATENCY_PREFIX):
+                    latency = stripped_chunk.removeprefix(
+                        FIRST_VISIBLE_CHUNK_LATENCY_PREFIX
                     )
+                    self.append_text(
+                        f"- First visible response chunk received in `{latency}s`.\n\n"
+                    )
+                elif stripped_chunk.startswith(REASONING_CHUNK_PREFIX):
+                    if is_json_block_open:
+                        self.append_text("\n```\n")
+                        is_json_block_open = False
+                    if not is_reasoning_block_open:
+                        self.append_text("**Reasoning**\n\n```text\n")
+                        is_reasoning_block_open = True
+                    reasoning_payload = stripped_chunk.removeprefix(
+                        REASONING_CHUNK_PREFIX
+                    )
+                    self.append_text(json.loads(reasoning_payload))
                 elif stripped_chunk.startswith(TOTAL_STATS_PREFIX):
+                    if is_reasoning_block_open:
+                        self.append_text("\n```\n")
+                        is_reasoning_block_open = False
                     if is_json_block_open:
                         self.append_text("\n```\n")
                         is_json_block_open = False
                     stats = stripped_chunk.split(":")[1].strip()
                     self.append_text(
-                        f"\n\n**Prompt + Answer / Max Context:** `{stats}`\n"
+                        f"\n\n**Prompt + Streamed Output / Max Context:** `{stats}`\n"
                     )
                 else:
+                    if is_reasoning_block_open:
+                        self.append_text("\n```\n\n**Answer**\n\n")
+                        is_reasoning_block_open = False
                     if not is_json_block_open:
                         self.append_text("```json\n")
                         is_json_block_open = True
                     response_content += chunk
                     self.append_text(chunk)
         finally:
+            if is_reasoning_block_open:
+                self.append_text("\n```\n")
             if is_json_block_open:
                 self.append_text("\n```\n")
 
@@ -421,163 +372,60 @@ class RunScreen(Screen):
         provider: LLMProvider | None = None
         try:
             config = ConfigManager()
-            transcript_path = config.get("data.transcript_path", "data/transcript.json")
-            summary_path = config.get("data.summary_path", "data/summary.txt")
-
-            with open(transcript_path, "r", encoding="utf-8-sig") as file_handle:
-                transcript_data = json.load(file_handle)
-
-            with open(summary_path, "r", encoding="utf-8-sig") as file_handle:
-                summary_content = file_handle.read()
-
-            self.append_text(
-                f"### 1. Loading data\n- **Transcript:** [{transcript_path}]({transcript_path})\n- **Summary:** [{summary_path}]({summary_path})\n\n"
-            )
-
-            transcript_obj = Transcript(**transcript_data)
-            summary_obj = Summary(content=summary_content)
-
-            self.append_text("### 2. Processing data...\n")
-            processed_transcript = DataProcessor.process_transcript(transcript_obj)
-            transcript_text = json.dumps(processed_transcript, indent=2)
-            summary_text = summary_obj.content
-
-            self.append_text("### 3. Initializing LLM Provider...\n")
             provider_type = config.get("app.provider", "vllm")
             provider = ProviderFactory.create_provider(provider_type)
-            self.append_text("- Validating endpoint and warming the connection...\n")
-            await provider.prepare()
-            if isinstance(provider, VLLMProvider) and provider.connection_status:
-                status = provider.connection_status
-                self.append_text(
-                    "- Connected to "
-                    f"`{status.base_url}` with model `{status.model}` in "
-                    f"`{status.latency_seconds:.3f}s`.\n"
-                )
-            else:
-                self.append_text("- Provider connection prepared successfully.\n")
-            requested_per_category = get_question_request_minimums(config)
-            semantic_dedup_enabled = is_embedding_enabled(config)
-            processor = None
-            if semantic_dedup_enabled:
-                processor = QuestionProcessor(log_callback=self.append_text)
-            pipeline = QuestionPipeline(
-                question_processor=processor,
+            workflow = EvaluationWorkflow(
+                provider=provider,
+                config=config,
                 log_callback=self.append_text,
-                semantic_dedup_enabled=semantic_dedup_enabled,
-                requested_per_category=requested_per_category,
+                question_response_runner=self._run_agent,
+                evaluation_response_runner=self._run_evaluator,
             )
 
-            questions_by_category = {}
-            parse_reports = {}
-            for agent_type in QUESTION_CATEGORIES:
-                response_text = await self._run_agent(
-                    agent_type,
-                    provider,
-                    transcript_text,
-                )
+            loaded_transcript = workflow.load_transcript()
+            loaded_summary = workflow.load_summary()
+            self.append_text(
+                "### 1. Loading data\n"
+                f"- **Transcript:** [{loaded_transcript.path}]({loaded_transcript.path})\n"
+                f"- **Summary:** [{loaded_summary.path}]({loaded_summary.path})\n\n"
+            )
 
-                try:
-                    parsed_batch = pipeline.parse_generation_response(
-                        agent_type,
-                        response_text,
-                    )
-                    questions_by_category[agent_type] = parsed_batch.questions
-                    parse_reports[agent_type] = parsed_batch.report
-                    self.append_text(
-                        "  - "
-                        f"Validated {parsed_batch.report['validated']} questions "
-                        f"(invalid: {parsed_batch.report['invalid']}).\n"
-                    )
-                except Exception as exc:
-                    self.append_text(
-                        f"  - [!WARNING] Error parsing questions for {agent_type}: {exc}\n"
-                    )
-                    questions_by_category[agent_type] = []
-                    parse_reports[agent_type] = self._failed_parse_report(
-                        agent_type,
-                        exc,
-                        requested_per_category.get(agent_type),
-                    )
+            self.append_text("### 2. Processing data...\n")
+            self.append_text("### 3. Initializing LLM Provider...\n")
+            await workflow.prepare_provider()
+            benchmark = await workflow.build_question_benchmark(loaded_transcript.text)
 
-            self.append_text("\n### 4. Deduplicating and Filtering Questions...\n")
-            if semantic_dedup_enabled:
-                embedding_model = config.get(
-                    "embedding.model",
-                    "Qwen/Qwen3-Embedding-4B",
-                )
+            output_path = "data/processed_questions.json"
+            with open(output_path, "w", encoding="utf-8") as file_handle:
+                json.dump(benchmark.questions_by_category, file_handle, indent=2)
+
+            report_path = "data/question_filter_report.json"
+            with open(report_path, "w", encoding="utf-8") as file_handle:
+                json.dump(benchmark.report, file_handle, indent=2)
+
+            self.append_text(
+                f"\n- **Final Questions:** [processed_questions.json]({output_path})\n"
+            )
+            self.append_text(
+                f"- **Filter Report:** [question_filter_report.json]({report_path})\n"
+            )
+            for category, questions in benchmark.questions_by_category.items():
+                category_report = benchmark.report["categories"][category]
                 self.append_text(
-                    "> [!NOTE]\n"
-                    f"> Loading `{embedding_model}` for semantic deduplication. "
-                    "This might take a moment...\n"
+                    "  - "
+                    f"{category.capitalize()}: {len(questions)} questions remaining "
+                    f"(invalid: {category_report['invalid']}, "
+                    f"off-rubric: {category_report['off_rubric']}, "
+                    f"exact duplicates: {category_report['exact_duplicates']}, "
+                    f"semantic duplicates: {category_report['semantic_duplicates']}, "
+                    f"shortfall: {category_report['shortfall']}).\n"
                 )
-            else:
-                self.append_text(
-                    "- Semantic deduplication is disabled by `embedding.enabled`; "
-                    "skipping embedding model loading.\n"
-                )
-
-            try:
-                processed_batch = pipeline.process(questions_by_category)
-                processed_results = processed_batch.questions_by_category
-                report = self._merge_parse_reports(
-                    processed_batch.report,
-                    parse_reports,
-                )
-
-                output_path = "data/processed_questions.json"
-                with open(output_path, "w", encoding="utf-8") as file_handle:
-                    json.dump(processed_results, file_handle, indent=2)
-
-                report_path = "data/question_filter_report.json"
-                with open(report_path, "w", encoding="utf-8") as file_handle:
-                    json.dump(report, file_handle, indent=2)
-
-                self.append_text(
-                    f"\n- **Final Questions:** [processed_questions.json]({output_path})\n"
-                )
-                self.append_text(
-                    f"- **Filter Report:** [question_filter_report.json]({report_path})\n"
-                )
-                for category, questions in processed_results.items():
-                    category_report = report["categories"][category]
-                    self.append_text(
-                        "  - "
-                        f"{category.capitalize()}: {len(questions)} questions remaining "
-                        f"(invalid: {category_report['invalid']}, "
-                        f"off-rubric: {category_report['off_rubric']}, "
-                        f"exact duplicates: {category_report['exact_duplicates']}, "
-                        f"semantic duplicates: {category_report['semantic_duplicates']}, "
-                        f"shortfall: {category_report['shortfall']}).\n"
-                    )
-
-            except Exception as exc:
-                self.append_text(
-                    f"\n> [!ERROR]\n> **Error during deduplication:** {str(exc)}"
-                )
-                return
 
             self.append_text("\n### 5. Evaluating Questions...\n")
-            evaluation_responses: dict[str, str] = {}
-            for category, questions in processed_results.items():
-                if not questions:
-                    self.append_text(
-                        "  - "
-                        f"Skipping {category} evaluation because no questions survived.\n"
-                    )
-                    continue
-                evaluation_responses[category] = await self._run_evaluator(
-                    category=category,
-                    provider=provider,
-                    transcript_text=transcript_text,
-                    summary_text=summary_text,
-                    questions=questions,
-                )
-
-            evaluation_pipeline = EvaluationPipeline(log_callback=self.append_text)
-            evaluation_batch = evaluation_pipeline.process(
-                questions_by_category=processed_results,
-                responses_by_category=evaluation_responses,
+            evaluation_batch = await workflow.evaluate_summary(
+                transcript_text=loaded_transcript.text,
+                summary_text=loaded_summary.text,
+                questions_by_category=benchmark.questions_by_category,
             )
 
             evaluations_path = "data/question_evaluations.json"

@@ -19,7 +19,7 @@ from openai import (
 )
 
 from src.config.config_manager import ConfigManager
-from src.providers.llm_provider import LLMProvider
+from src.providers.llm_provider import LLMProvider, LLMStreamEvent
 
 
 class _ConfigSource(Protocol):
@@ -200,8 +200,11 @@ class VLLMProvider(LLMProvider):
                 latency_seconds=round(self._time_fn() - started_at, 3),
             )
 
-    async def generate_stream(self, prompt: str) -> AsyncGenerator[str, None]:
-        """Stream tokens from the configured vLLM model."""
+    async def generate_stream(
+        self,
+        prompt: str,
+    ) -> AsyncGenerator[LLMStreamEvent, None]:
+        """Stream reasoning and answer tokens from the configured vLLM model."""
         if self._closed:
             raise VLLMGenerationError("Cannot generate with a closed VLLM provider.")
 
@@ -215,8 +218,20 @@ class VLLMProvider(LLMProvider):
                 timeout=self._request_timeout,
             )
             async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content is not None:
-                    yield chunk.choices[0].delta.content
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                reasoning_text = self._extract_delta_text(
+                    delta,
+                    "reasoning_content",
+                    "reasoning",
+                )
+                if reasoning_text:
+                    yield LLMStreamEvent(kind="reasoning", text=reasoning_text)
+
+                content_text = self._extract_delta_text(delta, "content")
+                if content_text:
+                    yield LLMStreamEvent(kind="content", text=content_text)
         except APITimeoutError as exc:
             raise VLLMGenerationError(
                 "Timed out while waiting for streamed output from "
@@ -267,6 +282,15 @@ class VLLMProvider(LLMProvider):
             if model_id:
                 model_ids.add(str(model_id))
         return model_ids
+
+    @staticmethod
+    def _extract_delta_text(delta: object, *field_names: str) -> str | None:
+        """Return the first string-valued delta attribute from the chunk."""
+        for field_name in field_names:
+            value = getattr(delta, field_name, None)
+            if isinstance(value, str):
+                return value
+        return None
 
     def _read_string(self, key: str, default: str) -> str:
         """Return a non-empty string configuration value."""

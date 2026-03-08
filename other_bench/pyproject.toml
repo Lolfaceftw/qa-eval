@@ -1,0 +1,22 @@
+[project]
+name = "other-bench-qafacteval"
+version = "0.1.0"
+description = "Isolated QAFactEval benchmark environment for qa-eval."
+requires-python = ">=3.8,<3.9"
+dependencies = [
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-2.2.5/en_core_web_sm-2.2.5.tar.gz",
+    "gdown>=5.2.0",
+    "qafacteval==0.10",
+    "torch==1.10.2+cu113",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu113"
+url = "https://download.pytorch.org/whl/cu113"
+explicit = true
+
+[tool.uv]
+override-dependencies = ["torch==1.10.2+cu113"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu113" }
